@@ -82,6 +82,34 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:8px;text-
 @keyframes ring{0%,100%{transform:rotate(0)}20%{transform:rotate(18deg)}40%{transform:rotate(-16deg)}60%{transform:rotate(10deg)}80%{transform:rotate(-8deg)}}
 @keyframes dash{to{stroke-dashoffset:0}}
 @media(max-width:640px){.panel{padding:12px}.top{margin:8px}.tab{padding:7px 10px;font-size:13px}}
+.row>.f{flex:1 1 140px}
+.drawer-bg{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.55);backdrop-filter:blur(3px);opacity:0;pointer-events:none!important;transition:opacity .3s}
+.drawer-bg.on{opacity:1;pointer-events:auto!important}
+.drawer{position:fixed;top:0;left:0;bottom:0;z-index:61;width:min(300px,86vw);border-radius:0 22px 22px 0;padding:16px;display:flex;flex-direction:column;overflow:auto;transform:translateX(-105%);transition:transform .35s cubic-bezier(.2,.9,.3,1)}
+.drawer.on{transform:none}
+.acc{margin-bottom:8px;border-radius:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);overflow:hidden;animation:up .4s both}
+.acc-h{width:100%;display:flex;justify-content:space-between;align-items:center;background:transparent;border:0;color:#fff;padding:13px 14px;font-size:15px;font-weight:700;cursor:pointer;transition:background .25s}
+.acc-h.on{background:linear-gradient(135deg,rgba(138,26,48,.55),rgba(225,29,72,.35))}
+.chev{font-style:normal;transition:transform .3s}.acc-h.on .chev{transform:rotate(180deg)}
+.acc-b{display:grid;grid-template-rows:0fr;transition:grid-template-rows .35s ease}.acc-b.on{grid-template-rows:1fr}.acc-b>div{overflow:hidden}
+.acc-i{display:flex;justify-content:space-between;align-items:center;width:100%;background:transparent;border:0;color:var(--mut);text-align:left;padding:12px 18px;font-size:14px;font-weight:600;cursor:pointer;transition:.2s;border-left:3px solid transparent}
+.acc-i:hover{color:#fff;background:rgba(255,255,255,.06);padding-left:22px}.acc-i.on{color:#fff;border-left-color:var(--red);background:rgba(225,29,72,.15)}
+.badge{background:var(--red);border-radius:9px;padding:0 7px;font-size:11px;color:#fff}
+@media(max-width:820px){
+.top{margin:calc(8px + env(safe-area-inset-top)) 8px 8px;padding:8px 10px;gap:8px;flex-wrap:nowrap}.top .brand{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.panel{margin:0 8px calc(8px + env(safe-area-inset-bottom));padding:12px;border-radius:16px}
+.panel table{display:block;overflow-x:auto;white-space:nowrap}
+.grid{grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:9px}
+.legend{margin:0 8px calc(8px + env(safe-area-inset-bottom));padding:8px;gap:6px 10px;font-size:11px;max-height:34vh;overflow:auto}
+.legend .btn{flex:1 1 auto}
+.overlay{padding:6px;align-items:flex-end}.modal{width:100%!important;max-height:94vh;padding:16px 14px;border-radius:20px}
+.hero{padding:22px 16px}.big{font-size:23px}h2{font-size:20px}
+input,select,textarea{font-size:16px}
+.toasts{left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom))}.toast{max-width:none}
+.btn{padding:10px 14px}.btn.sm{padding:7px 10px}
+.proof{max-height:50vh}
+}
+@media(max-width:380px){.grid{grid-template-columns:1fr}}
 #ticket{display:none}
 .tk{width:54mm;margin:0 auto;color:#000;background:#fff;font:12px/1.35 'Courier New',monospace;font-weight:700;padding:2mm 0}
 .tk h1{font:900 16px Arial,sans-serif;text-align:center;margin:0 0 2px}.tk .c{text-align:center}.tk hr{border:0;border-top:1px dashed #000;margin:5px 0}
@@ -219,7 +247,7 @@ function ToastHost(){const [l,setL]=useState([]);useEffect(()=>{const h=e=>{cons
 function QR({text,size=5}){const html=useMemo(()=>{try{const q=qrcode(0,'M');q.addData(text);q.make();return q.createSvgTag(size,0)}catch{return ''}},[text]);return <div className="qrbox" dangerouslySetInnerHTML={{__html:html}}/>}
 function Bell({A,onPick}){const [open,setOpen]=useState(false);
   return <div style={{position:'relative'}}><button className="btn sm" onClick={()=>{setOpen(!open);A.clear();if('Notification' in window&&Notification.permission==='default')Notification.requestPermission()}}><span className={'bell '+(A.unread?'ring':'')}>🔔{A.unread>0&&<b>{A.unread}</b>}</span></button>
-    {open&&<div className="glass" style={{position:'absolute',right:0,top:44,width:300,maxHeight:360,overflow:'auto',padding:10,zIndex:30}}>{!A.events.length&&<div className="mut">Sin alertas aún</div>}
+    {open&&<div className="glass" style={{position:'fixed',right:8,top:64,width:'min(320px,calc(100vw - 16px))',maxHeight:'60vh',overflow:'auto',padding:10,zIndex:30}}>{!A.events.length&&<div className="mut">Sin alertas aún</div>}
       {A.events.map(e=><div key={e.id} className="card" style={{padding:8,marginBottom:6,cursor:'pointer',borderColor:STATUS[e.status].c}} onClick={()=>{setOpen(false);onPick&&onPick(e.roomId)}}>{e.text}<div className="hint">{fdate(e.at)}</div></div>)}</div>}</div>}
 function QRScanner({onResult,onClose}){const v=useRef();const [err,setErr]=useState('');
   useEffect(()=>{let stream,stop=false;(async()=>{try{if(!('BarcodeDetector' in window))throw new Error('Este navegador no soporta escaneo QR. Usa el código manual o NFC.');
@@ -347,7 +375,7 @@ function Waiting({onClose}){
 
 /* ================= Administrador ================= */
 function Admin(){
-  const S=useS();const [auth,setAuth]=useState(SS('adm')==='1');const [pin,setPin]=useState('');const [tab,setTab]=useState('mapa');const [selId,setSel]=useState(null);const [newRoom,setNewRoom]=useState(null);const [edit,setEdit]=useState(false);const now=useNow();
+  const S=useS();const [auth,setAuth]=useState(SS('adm')==='1');const [pin,setPin]=useState('');const [tab,setTab]=useState('mapa');const mob=useMedia('(max-width:820px)');const [menu,setMenu]=useState(false);const [selId,setSel]=useState(null);const [newRoom,setNewRoom]=useState(null);const [edit,setEdit]=useState(false);const now=useNow();
   const A=useAlerts(S,now,auth);
   useEffect(()=>{if(auth&&S.ready&&!S.hasCfg&&!S.data.rooms.length)seed(S)},[auth,S.ready]);
   const status={};S.data.rooms.forEach(r=>status[r.id]=roomStatus(r,S.data.accounts,now));
@@ -358,8 +386,9 @@ function Admin(){
   const pend=S.data.reservations.filter(r=>r.status==='pending').length;
   return <div className="ui">
     <Scene rooms={S.data.rooms} objects={S.data.objects} status={status} edit={edit&&tab==='mapa'} selected={selId} onRoom={id=>setSel(id)} onMove={(k,id,x,z)=>S.put(k==='room'?'rooms':'objects',{id,x,z})}/>
-    <div className="glass top"><div className="brand">{S.settings.motelName} · Admin</div><div className="tabs">{tabs.map(([k,l])=><button key={k} className={'tab '+(tab===k?'on':'')} onClick={()=>setTab(k)}>{l}{k==='reservas'&&pend>0&&<b style={{background:'var(--red)',borderRadius:9,padding:'0 6px',marginLeft:5,fontSize:11}}>{pend}</b>}</button>)}</div>
-      <span className="chip" style={{background:S.online?'#22c55e':'#facc15'}}>{CLOUD?(S.online?'Nube':S.online===null?'Conectando…':'Sin conexión'):'Local'}</span><Bell A={A} onPick={setSel}/><button className="btn sm" onClick={()=>{SS('adm',null);setAuth(false)}}>Salir</button></div>
+    <div className="glass top">{mob&&<button className="btn sm" aria-label="Menú" onClick={()=>setMenu(true)}>☰</button>}<div className="brand">{mob?(tabs.find(t=>t[0]===tab)||[])[1]:S.settings.motelName+' · Admin'}</div>{!mob&&<div className="tabs">{tabs.map(([k,l])=><button key={k} className={'tab '+(tab===k?'on':'')} onClick={()=>setTab(k)}>{l}{k==='reservas'&&pend>0&&<b style={{background:'var(--red)',borderRadius:9,padding:'0 6px',marginLeft:5,fontSize:11}}>{pend}</b>}</button>)}</div>}{mob&&<span className="sp"/>}
+      <span className="chip" style={{background:S.online?'#22c55e':'#facc15'}}>{CLOUD?(S.online?'Nube':S.online===null?'Conectando…':'Sin conexión'):'Local'}</span><Bell A={A} onPick={setSel}/>{!mob&&<button className="btn sm" onClick={()=>{SS('adm',null);setAuth(false)}}>Salir</button>}</div>
+    {mob&&<SideMenu open={menu} onClose={()=>setMenu(false)} tab={tab} setTab={setTab} pend={pend} name={S.settings.motelName} onExit={()=>{SS('adm',null);setAuth(false)}}/>}
     {tab==='mapa'?<><div style={{flex:1,pointerEvents:'none'}}/>
       <div className="glass legend">{Object.entries(STATUS).map(([k,v])=><span key={k}><i className="dot" style={{background:v.c}}/>{v.l} ({Object.values(status).filter(s=>s===k).length})</span>)}<span className="sp"/>
         <button className="btn sm g" onClick={()=>setNewRoom(newRoomDraft(S))}>➕ Habitación</button>
@@ -372,6 +401,16 @@ function Admin(){
     {selId&&<RoomPanel S={S} id={selId} now={now} onClose={()=>setSel(null)}/>}
     {newRoom&&<RoomForm key={newRoom.id} S={S} init={newRoom} onClose={()=>setNewRoom(null)}/>}
   </div>}
+function useMedia(q){const [m,setM]=useState(()=>matchMedia(q).matches);useEffect(()=>{const mq=matchMedia(q);const h=()=>setM(mq.matches);mq.addEventListener('change',h);h();return()=>mq.removeEventListener('change',h)},[q]);return m}
+const MENU_GROUPS=[['op','Operación','🏨',[['mapa','🗺 Mapa'],['panel','📊 Panel'],['reservas','📅 Reservas'],['liq','💳 Liquidar']]],['ges','Gestión','🗂',[['habs','🛏 Habitaciones'],['inv','📦 Inventario'],['rrhh','👥 RRHH']]],['sis','Sistema','⚙',[['cfg','⚙ Ajustes']]]];
+function SideMenu({open,onClose,tab,setTab,pend,name,onExit}){
+  const cur=MENU_GROUPS.find(g=>g[3].some(t=>t[0]===tab))?.[0]||'op';const [g,setG]=useState(cur);useEffect(()=>{setG(cur)},[tab]);
+  return <><div className={'drawer-bg '+(open?'on':'')} onClick={onClose}/><aside className={'drawer glass '+(open?'on':'')}>
+    <div className="row" style={{marginBottom:10}}><div className="brand" style={{fontSize:17}}>{name}</div><span className="sp"/><button className="btn sm" onClick={onClose}>✕</button></div>
+    {MENU_GROUPS.map(([id,label,ic,items],gi)=>{const isOpen=g===id;return <div key={id} className="acc" style={{animationDelay:gi*70+'ms'}}>
+      <button className={'acc-h '+(isOpen?'on':'')} onClick={()=>setG(isOpen?'':id)}><span>{ic} {label}</span><i className="chev">▾</i></button>
+      <div className={'acc-b '+(isOpen?'on':'')}><div>{items.map(([k,l])=><button key={k} className={'acc-i '+(tab===k?'on':'')} onClick={()=>{setTab(k);onClose()}}>{l}{k==='reservas'&&pend>0&&<b className="badge">{pend}</b>}</button>)}</div></div></div>})}
+    <div className="sp"/><button className="btn" style={{width:'100%'}} onClick={onExit}>⎋ Salir</button></aside></>}
 function ObjDeleter({S}){return <select style={{width:'auto'}} value="" onChange={e=>e.target.value&&S.del('objects',e.target.value)}><option value="">🗑 Quitar objeto…</option>{S.data.objects.map(o=><option key={o.id} value={o.id}>{OBJ_LABEL[o.type]} ({o.x},{o.z})</option>)}</select>}
 function useNow(){const [n,setN]=useState(Date.now());useEffect(()=>{const i=setInterval(()=>setN(Date.now()),1000);return()=>clearInterval(i)},[]);return n}
 
