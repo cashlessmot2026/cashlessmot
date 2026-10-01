@@ -82,12 +82,19 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:8px;text-
 @keyframes ring{0%,100%{transform:rotate(0)}20%{transform:rotate(18deg)}40%{transform:rotate(-16deg)}60%{transform:rotate(10deg)}80%{transform:rotate(-8deg)}}
 @keyframes dash{to{stroke-dashoffset:0}}
 @media(max-width:640px){.panel{padding:12px}.top{margin:8px}.tab{padding:7px 10px;font-size:13px}}
-@media print{body *{visibility:hidden}.invoice,.invoice *{visibility:visible}.invoice{position:fixed;inset:0;background:#fff;color:#000;padding:20px}}
+#ticket{display:none}
+.tk{width:54mm;margin:0 auto;color:#000;background:#fff;font:12px/1.35 'Courier New',monospace;font-weight:700;padding:2mm 0}
+.tk h1{font:900 16px Arial,sans-serif;text-align:center;margin:0 0 2px}.tk .c{text-align:center}.tk hr{border:0;border-top:1px dashed #000;margin:5px 0}
+.tk .r{display:flex;justify-content:space-between;gap:6px}.tk .r span:first-child{flex:1;word-break:break-word}.tk .tot{font-size:16px;font-weight:900}
+@media print{@page{size:58mm auto;margin:0}
+html,body{height:auto!important;overflow:visible!important;background:#fff!important}
+#scene,#root,.toasts,.overlay{display:none!important}#ticket{display:block!important}}
 </style>
 </head>
 <body>
 <div id="scene"></div>
 <div id="root"></div>
+<div id="ticket"></div>
 <script src="config.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -385,7 +392,14 @@ function RoomPanel({S,id,now,onClose}){
       <input style={{flex:1}} placeholder="Nota (daño, reparación…)" value={room.note||''} onChange={e=>S.put('rooms',{id:room.id,note:e.target.value})}/><button className="btn sm" onClick={()=>S.put('rooms',{id:room.id,status:'unavailable'})}>Marcar no disponible</button></div></div>
     <div className="row" style={{marginTop:12}}><QR text={'MOTEL:ROOM:'+room.number} size={3}/><div className="hint">QR de la habitación. Imprímelo y pégalo en la puerta; la colaboradora lo escanea (o usa un tag NFC) para iniciar el aseo.</div></div></Modal>}
 
-function Invoice({inv,S}){return <div className="invoice"><h2>{S.settings.motelName}</h2><div>Factura <b>{inv.number}</b> · Hab {inv.roomNumber}<br/>{fdate(inv.start)} → {fdate(inv.end)} · Pago: {inv.method}</div>
+function Ticket({inv,S}){const tk=document.getElementById('ticket');if(!tk)return null;const dm=Math.max(1,Math.round((inv.end-inv.start)/60000));
+  return ReactDOM.createPortal(<div className="tk"><h1>{S.settings.motelName}</h1><div className="c">FACTURA {inv.number}</div><div className="c">{new Date(inv.at).toLocaleString('es-CO')}</div><hr/>
+    <div className="r"><span>Habitación</span><span>{inv.roomNumber}</span></div><div className="r"><span>Ingreso</span><span>{new Date(inv.start).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</span></div>
+    <div className="r"><span>Salida</span><span>{new Date(inv.end).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</span></div><div className="r"><span>Tiempo</span><span>{Math.floor(dm/60)}h {dm%60}m</span></div><hr/>
+    {inv.items.map(i=><div key={i.id} style={{marginBottom:3}}><div>{i.name}</div><div className="r"><span>{i.qty} x {money(i.price)}</span><span>{money(i.qty*i.price)}</span></div></div>)}<hr/>
+    <div className="r"><span>Subtotal</span><span>{money(inv.subtotal)}</span></div><div className="r"><span>Impuestos</span><span>{money(inv.tax)}</span></div><div className="r tot"><span>TOTAL</span><span>{money(inv.total)}</span></div>
+    <div className="r"><span>Pago</span><span>{inv.method}</span></div><hr/><div className="c">¡Gracias por su visita!</div><div className="c">.</div></div>,tk)}
+function Invoice({inv,S}){return <div className="invoice"><Ticket inv={inv} S={S}/><h2>{S.settings.motelName}</h2><div>Factura <b>{inv.number}</b> · Hab {inv.roomNumber}<br/>{fdate(inv.start)} → {fdate(inv.end)} · Pago: {inv.method}</div>
   <table style={{margin:'12px 0'}}><thead><tr><th>Concepto</th><th>Cant</th><th>Valor</th><th>IVA</th></tr></thead><tbody>{inv.items.map(i=><tr key={i.id}><td>{i.name}</td><td>{i.qty}</td><td>{money(i.qty*i.price)}</td><td>{i.taxPct||0}%</td></tr>)}</tbody></table>
   <div style={{textAlign:'right'}}>Subtotal {money(inv.subtotal)}<br/>Impuestos {money(inv.tax)}<br/><b className="big">{money(inv.total)}</b></div><button className="btn p" style={{marginTop:10}} onClick={()=>window.print()}>🖨 Imprimir</button></div>}
 

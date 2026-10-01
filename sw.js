@@ -1,4 +1,4 @@
-const V = 'motel-v1';
+const V = 'motel-v2';
 const SHELL = ['./', './index.html', './config.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
