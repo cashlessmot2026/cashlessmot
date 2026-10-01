@@ -1,0 +1,13 @@
+{
+  "name": "Motel Cashless",
+  "short_name": "Motel",
+  "description": "Gestión y control de habitaciones",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a0608",
+  "theme_color": "#0a0608",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
