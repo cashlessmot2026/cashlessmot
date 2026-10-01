@@ -347,7 +347,7 @@ function Waiting({onClose}){
 
 /* ================= Administrador ================= */
 function Admin(){
-  const S=useS();const [auth,setAuth]=useState(SS('adm')==='1');const [pin,setPin]=useState('');const [tab,setTab]=useState('mapa');const [selId,setSel]=useState(null);const [edit,setEdit]=useState(false);const now=useNow();
+  const S=useS();const [auth,setAuth]=useState(SS('adm')==='1');const [pin,setPin]=useState('');const [tab,setTab]=useState('mapa');const [selId,setSel]=useState(null);const [newRoom,setNewRoom]=useState(null);const [edit,setEdit]=useState(false);const now=useNow();
   const A=useAlerts(S,now,auth);
   useEffect(()=>{if(auth&&S.ready&&!S.hasCfg&&!S.data.rooms.length)seed(S)},[auth,S.ready]);
   const status={};S.data.rooms.forEach(r=>status[r.id]=roomStatus(r,S.data.accounts,now));
@@ -362,6 +362,7 @@ function Admin(){
       <span className="chip" style={{background:S.online?'#22c55e':'#facc15'}}>{CLOUD?(S.online?'Nube':S.online===null?'Conectando…':'Sin conexión'):'Local'}</span><Bell A={A} onPick={setSel}/><button className="btn sm" onClick={()=>{SS('adm',null);setAuth(false)}}>Salir</button></div>
     {tab==='mapa'?<><div style={{flex:1,pointerEvents:'none'}}/>
       <div className="glass legend">{Object.entries(STATUS).map(([k,v])=><span key={k}><i className="dot" style={{background:v.c}}/>{v.l} ({Object.values(status).filter(s=>s===k).length})</span>)}<span className="sp"/>
+        <button className="btn sm g" onClick={()=>setNewRoom(newRoomDraft(S))}>➕ Habitación</button>
         <button className={'btn sm '+(edit?'p':'')} onClick={()=>setEdit(!edit)}>{edit?'✔ Terminar edición':'✏ Editar mapa'}</button>
         {edit&&Object.entries(OBJ_LABEL).map(([k,l])=><button key={k} className="btn sm" onClick={()=>S.put('objects',{id:uid(),type:k,x:0,z:0})}>+ {l}</button>)}
         {edit&&<ObjDeleter S={S}/>}</div></>
@@ -369,6 +370,7 @@ function Admin(){
       {tab==='panel'&&<Dashboard S={S} now={now} status={status} open={setSel}/>}{tab==='reservas'&&<Reservas S={S}/>}{tab==='habs'&&<Habitaciones S={S}/>}
       {tab==='liq'&&<Liquidar S={S} now={now} open={setSel} status={status}/>}{tab==='inv'&&<Inventario S={S}/>}{tab==='rrhh'&&<RRHH S={S}/>}{tab==='cfg'&&<Ajustes S={S}/>}</div>}
     {selId&&<RoomPanel S={S} id={selId} now={now} onClose={()=>setSel(null)}/>}
+    {newRoom&&<RoomForm key={newRoom.id} S={S} init={newRoom} onClose={()=>setNewRoom(null)}/>}
   </div>}
 function ObjDeleter({S}){return <select style={{width:'auto'}} value="" onChange={e=>e.target.value&&S.del('objects',e.target.value)}><option value="">🗑 Quitar objeto…</option>{S.data.objects.map(o=><option key={o.id} value={o.id}>{OBJ_LABEL[o.type]} ({o.x},{o.z})</option>)}</select>}
 function useNow(){const [n,setN]=useState(Date.now());useEffect(()=>{const i=setInterval(()=>setN(Date.now()),1000);return()=>clearInterval(i)},[]);return n}
@@ -435,16 +437,23 @@ function Reservas({S}){
       <Field l="Duración (horas)"><input type="number" step=".5" value={(m.end-m.start)/3600000} onChange={e=>setM({...m,end:m.start+e.target.value*3600000})}/></Field><Field l="Valor"><input type="number" value={m.amount} onChange={e=>setM({...m,amount:+e.target.value})}/></Field>
       <button className="btn p" onClick={()=>{const room=S.data.rooms.find(x=>x.id===m.room);if(conflict(room,m.start,m.end,S,m.id))return toast('Conflicto de horario','err');S.put('reservations',m);setM(null)}}>Guardar</button></Modal>}</>}
 
-function Habitaciones({S}){
-  const [f,setF]=useState(null);const blank={number:'',category:S.settings.categories[0],priceHour:30000,priceNight:120000,defaultMin:120,x:0,z:0,tagId:'',status:'free'};
+function newRoomDraft(S){const rs=S.data.rooms;const nums=rs.map(r=>parseInt(r.number)).filter(n=>!isNaN(n));const last=rs[rs.length-1];
+  let x=0,z=0;const taken=(a,b)=>rs.some(r=>Math.abs(r.x-a)<1.8&&Math.abs(r.z-b)<1.8);for(let zz=-2.2;zz<=7;zz+=3.8){for(let xx=-7.5;xx<=7.5;xx+=3){if(!taken(xx,zz)){x=xx;z=zz;zz=99;break}}}
+  return {id:uid(),number:String(nums.length?Math.max(...nums)+1:101),category:last?.category||S.settings.categories[0],priceHour:last?.priceHour||30000,priceNight:last?.priceNight||120000,defaultMin:last?.defaultMin||120,x,z,tagId:'',status:'free',accountId:null}}
+function RoomForm({S,init,onClose}){
+  const [f,setF]=useState(init);
   const nfc=async()=>{try{toast('Acerca el tag NFC…');const r=await readNFC();setF(x=>({...x,tagId:r.text||r.serial}));toast('Tag leído')}catch(e){toast(e.message,'err')}};
-  return <><div className="row"><h2 style={{margin:0}}>Habitaciones</h2><span className="sp"/><button className="btn p" onClick={()=>setF({...blank,id:uid()})}>➕ Nueva habitación</button></div>
-    <div className="grid" style={{marginTop:12}}>{S.data.rooms.map(r=><div key={r.id} className="card"><div className="row"><b>Hab {r.number}</b><span className="mut">{r.category}</span></div><div>{money(r.priceHour)}/h · {money(r.priceNight)}/noche</div><div className="hint">Tiempo base {r.defaultMin} min · pos ({r.x},{r.z})</div>
-      <div className="row" style={{marginTop:8}}><button className="btn sm" onClick={()=>setF({...r})}>Editar</button><button className="btn sm" onClick={()=>confirm('¿Eliminar habitación?')&&S.del('rooms',r.id)}>🗑</button></div></div>)}</div>
-    {f&&<Modal onClose={()=>setF(null)}><h3>Habitación</h3><div className="row"><Field l="Número"><input value={f.number} onChange={e=>setF({...f,number:e.target.value})}/></Field><Field l="Categoría"><select value={f.category} onChange={e=>setF({...f,category:e.target.value})}>{S.settings.categories.map(c=><option key={c}>{c}</option>)}</select></Field></div>
+  return <Modal onClose={onClose}><h3>Habitación</h3><div className="row"><Field l="Número"><input value={f.number} onChange={e=>setF({...f,number:e.target.value})}/></Field><Field l="Categoría"><select value={f.category} onChange={e=>setF({...f,category:e.target.value})}>{S.settings.categories.map(c=><option key={c}>{c}</option>)}</select></Field></div>
       <div className="row"><Field l="Valor por hora"><input type="number" value={f.priceHour} onChange={e=>setF({...f,priceHour:+e.target.value})}/></Field><Field l="Valor noche"><input type="number" value={f.priceNight} onChange={e=>setF({...f,priceNight:+e.target.value})}/></Field><Field l="Tiempo base (min)"><input type="number" value={f.defaultMin} onChange={e=>setF({...f,defaultMin:+e.target.value})}/></Field></div>
       <Field l="Tag NFC / código de habitación"><div className="row"><input style={{flex:1}} placeholder={'Vacío = usa QR MOTEL:ROOM:'+f.number} value={f.tagId||''} onChange={e=>setF({...f,tagId:e.target.value})}/><button className="btn sm" onClick={nfc}>📡 Leer NFC</button></div></Field>
-      <button className="btn p" onClick={()=>{if(!f.number)return toast('Falta el número','err');S.put('rooms',f);setF(null)}}>Guardar</button></Modal>}</>}
+      <div className="hint" style={{marginBottom:8}}>Después puedes moverla arrastrándola en el Mapa con “✏ Editar mapa”.</div>
+      <button className="btn p" onClick={()=>{if(!f.number)return toast('Falta el número','err');if(S.data.rooms.some(r=>r.number===f.number&&r.id!==f.id))return toast('Ya existe una habitación con ese número','err');S.put('rooms',f);toast('Habitación guardada');onClose()}}>Guardar</button></Modal>}
+function Habitaciones({S}){
+  const [f,setF]=useState(null);
+  return <><div className="row"><h2 style={{margin:0}}>Habitaciones</h2><span className="sp"/><button className="btn p" onClick={()=>setF(newRoomDraft(S))}>➕ Nueva habitación</button></div>
+    <div className="grid" style={{marginTop:12}}>{S.data.rooms.map(r=><div key={r.id} className="card"><div className="row"><b>Hab {r.number}</b><span className="mut">{r.category}</span></div><div>{money(r.priceHour)}/h · {money(r.priceNight)}/noche</div><div className="hint">Tiempo base {r.defaultMin} min · pos ({r.x},{r.z})</div>
+      <div className="row" style={{marginTop:8}}><button className="btn sm" onClick={()=>setF({...r})}>Editar</button><button className="btn sm" onClick={()=>confirm('¿Eliminar habitación?')&&S.del('rooms',r.id)}>🗑</button></div></div>)}</div>
+    {f&&<RoomForm key={f.id} S={S} init={f} onClose={()=>setF(null)}/>}</>}
 
 function Liquidar({S,now,open,status}){
   const occ=S.data.rooms.filter(r=>['occupied','overtime'].includes(status[r.id]));const [inv,setInv]=useState(null);
