@@ -326,7 +326,7 @@ function Reserve({onClose}){
       <div className="grid">{rooms.map(({r,c},i)=><div key={r.id} className="card room-card" style={{'--c':c?'#6b7280':'#22c55e',opacity:c?.5:1,outline:sel===r.id?'2px solid var(--red)':'none',animationDelay:i*40+'ms'}} onClick={()=>!c&&setSel(r.id)}>
         <h4>Habitación {r.number}</h4><div className="mut">{r.category}</div><div style={{margin:'6px 0'}}><b>{money(priceFor(r,mode,hours,S))}</b></div>{c?<span className="chip" style={{background:'#6b7280'}}>{c}</span>:<span className="chip" style={{background:'#22c55e'}}>Disponible</span>}</div>)}</div>
       <div className="row" style={{marginTop:14}}><button className="btn" onClick={()=>setStep(2.5)}>Mis solicitudes ({mine.length})</button><span className="sp"/><button className="btn p" disabled={!sel} onClick={()=>setStep(2)}>Continuar al pago</button></div></>}
-    {step===2&&<><p>Total a pagar: <b className="big">{money(priceFor(S.data.rooms.find(r=>r.id===sel),mode,hours,S))}</b></p><p className="mut">{S.settings.payInfo}</p>
+    {step===2&&<><p>Total a pagar: <b className="big">{money(priceFor(S.data.rooms.find(r=>r.id===sel),mode,hours,S))}</b></p><p className="mut">{S.settings.payInfo}</p><PayMethods S={S}/>
       <Field l="Comprobante de pago"><input type="file" accept="image/*" onChange={async x=>x.target.files[0]&&setProof(await imgToData(x.target.files[0]))}/></Field>{proof&&<img className="proof" src={proof}/>}
       <div className="row" style={{marginTop:12}}><button className="btn" onClick={()=>setStep(1)}>Atrás</button><span className="sp"/><button className="btn p" onClick={submit}>Enviar solicitud</button></div></>}
     {step===3&&<div style={{textAlign:'center'}}><svg className="check" viewBox="0 0 120 120"><circle cx="60" cy="60" r="54"/><path d="M34 62l17 17 36-38"/></svg><h3>Solicitud enviada</h3><p className="mut">En espera de confirmación del administrador. Puedes ver el estado en “Mis solicitudes”; cuando sea aprobada recibirás tu código de reserva.</p><button className="btn p" onClick={()=>setStep(2.5)}>Ver mis solicitudes</button></div>}
@@ -472,12 +472,32 @@ function RRHH({S}){
       <Field l="Tag de ingreso / salida (NFC)"><div className="row"><input style={{flex:1}} value={f.tagId||''} onChange={e=>setF({...f,tagId:e.target.value})} placeholder="Serial del tag"/><button className="btn sm" onClick={nfc}>📡 Agregar tag</button></div></Field>
       <button className="btn p" onClick={()=>{if(!f.name||!f.cedula)return toast('Nombre y cédula son obligatorios','err');S.put('staff',f);setF(null)}}>Guardar</button></Modal>}</>}
 
+const PAY_TYPES={qr:'Imagen QR',account:'Número de cuenta',link:'Link de pago'};
+function PayEditor({f,setF}){
+  const list=f.payMethods||[];const [n,setN]=useState({type:'qr',name:'',detail:'',image:''});
+  const add=()=>{if(!n.name)return toast('Ponle un nombre (ej. Nequi)','err');if(n.type==='qr'&&!n.image)return toast('Adjunta la imagen del QR','err');if(n.type!=='qr'&&!n.detail)return toast('Falta el '+(n.type==='link'?'link':'número de cuenta'),'err');
+    setF({...f,payMethods:[...list,{...n,id:uid()}]});setN({type:n.type,name:'',detail:'',image:''})};
+  return <div className="card" style={{marginTop:6}}><h4>💳 Medios de pago para transferencias</h4><div className="hint" style={{marginBottom:8}}>Se muestran al cliente en el paso de pago. Recuerda pulsar “Guardar ajustes”.</div>
+    {list.map(p=><div key={p.id} className="row" style={{marginBottom:6}}>{p.type==='qr'&&<img className="thumb" src={p.image}/>}<div style={{flex:1}}><b>{p.name}</b> <span className="hint">{PAY_TYPES[p.type]}</span><div className="mut" style={{wordBreak:'break-all'}}>{p.type!=='qr'&&p.detail}</div></div><button className="btn sm" onClick={()=>setF({...f,payMethods:list.filter(x=>x.id!==p.id)})}>🗑</button></div>)}
+    <div className="row"><select style={{width:160}} value={n.type} onChange={e=>setN({...n,type:e.target.value})}>{Object.entries(PAY_TYPES).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select><input style={{flex:1,minWidth:120}} placeholder="Nombre (Nequi, Bancolombia…)" value={n.name} onChange={e=>setN({...n,name:e.target.value})}/></div>
+    {n.type==='qr'?<Field l="Imagen del QR"><input type="file" accept="image/*" onChange={async e=>e.target.files[0]&&setN({...n,image:await imgToData(e.target.files[0],700)})}/></Field>
+      :<Field l={n.type==='link'?'Link (https://…)':'Número de cuenta / celular (+ titular)'}><input value={n.detail} onChange={e=>setN({...n,detail:e.target.value})}/></Field>}
+    {n.image&&n.type==='qr'&&<img className="thumb" src={n.image}/>}<div><button className="btn sm p" onClick={add}>➕ Agregar medio de pago</button></div></div>}
+function PayMethods({S}){const l=S.settings.payMethods||[];const [big,setBig]=useState(null);if(!l.length)return null;
+  const copy=t=>{try{navigator.clipboard.writeText(t);toast('Copiado')}catch{toast(t)}};
+  const safe=u=>/^https?:\/\//i.test(u)?u:'https://'+u;
+  return <div className="grid" style={{margin:'10px 0'}}>{l.map(p=><div key={p.id} className="card"><b>{p.name}</b>
+    {p.type==='qr'&&<><br/><img className="thumb" style={{width:110,height:110,cursor:'zoom-in',margin:'6px 0'}} src={p.image} onClick={()=>setBig(p.image)}/><div className="hint">Toca para ampliar y escanear</div></>}
+    {p.type==='account'&&<div className="row" style={{marginTop:6}}><span style={{flex:1,wordBreak:'break-all'}}>{p.detail}</span><button className="btn sm" onClick={()=>copy(p.detail)}>Copiar</button></div>}
+    {p.type==='link'&&<div style={{marginTop:6}}><a href={safe(p.detail)} target="_blank" rel="noopener noreferrer"><button className="btn sm p">Pagar en línea ↗</button></a></div>}</div>)}
+    {big&&<Modal onClose={()=>setBig(null)}><div style={{textAlign:'center'}}><img className="proof" src={big}/></div></Modal>}</div>}
 function Ajustes({S}){
   const s=S.settings;const [f,setF]=useState({...s});const [cat,setCat]=useState('');
   const save=()=>{S.put('settings',{...f,id:'main'});toast('Ajustes guardados')};
   return <><h2>Ajustes</h2><div className="row" style={{alignItems:'flex-start'}}><div style={{flex:1,minWidth:260}}><Field l="Nombre del motel"><input value={f.motelName} onChange={e=>setF({...f,motelName:e.target.value})}/></Field><Field l="PIN administrador"><input value={f.adminPin} onChange={e=>setF({...f,adminPin:e.target.value})}/></Field>
     <Field l="Valor por minuto adicional (excedente)"><input type="number" value={f.extraPerMin} onChange={e=>setF({...f,extraPerMin:+e.target.value})}/></Field><Field l="Horas de una noche"><input type="number" value={f.nightHours} onChange={e=>setF({...f,nightHours:+e.target.value})}/></Field>
-    <Field l="Instrucciones de pago (visibles al cliente)"><textarea rows="3" value={f.payInfo} onChange={e=>setF({...f,payInfo:e.target.value})}/></Field></div>
+    <Field l="Instrucciones de pago (visibles al cliente)"><textarea rows="3" value={f.payInfo} onChange={e=>setF({...f,payInfo:e.target.value})}/></Field>
+    <PayEditor f={f} setF={setF}/></div>
     <div style={{flex:1,minWidth:260}}><Field l="Categorías de habitación"><div className="row">{f.categories.map(c=><span key={c} className="chip" style={{background:'#fff'}}>{c} <a style={{cursor:'pointer'}} onClick={()=>setF({...f,categories:f.categories.filter(x=>x!==c)})}>✕</a></span>)}</div></Field>
       <div className="row"><input style={{flex:1}} placeholder="Nueva categoría" value={cat} onChange={e=>setCat(e.target.value)}/><button className="btn sm" onClick={()=>{cat&&setF({...f,categories:[...f.categories,cat]});setCat('')}}>Agregar</button></div>
       <h3>Sistema</h3><div className="mut">Modo: {CLOUD?'Supabase (nube) — '+(S.online?'conectado':'sin conexión'):'Local (localStorage)'}</div><div className="row" style={{marginTop:8}}><button className="btn sm" onClick={()=>Notification.requestPermission().then(p=>toast('Notificaciones: '+p))}>🔔 Activar notificaciones</button><button className="btn sm" onClick={()=>siren(2)}>🔊 Probar sirena</button><button className="btn sm" onClick={()=>{seed(S);toast('Datos demo cargados')}}>Cargar datos demo</button></div>
