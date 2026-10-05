@@ -36,4 +36,4 @@ cd android && gradlew assembleDebug
 - **Chat interno + auditorías**: el superadmin pide foto y cantidad de productos; el admin responde; el superadmin ajusta el inventario indicando el motivo (daño, pérdida, vencida…).
 - **Superadmin**: estadísticas, historial por día con el detalle de cada habitación, edición de pagos, precios, sugerencias de compra y cambio de contraseñas.
 
-> NFC: en Android funciona con Chrome (Web NFC). Dentro del APK se usan el QR o el código manual; el QR funciona en ambos.
+> NFC: en el APK funciona de forma nativa (plugin `@capgo/capacitor-nfc`); en la web funciona con Chrome para Android (Web NFC). Al abrir el escáner se activan a la vez la cámara (QR) y el NFC.

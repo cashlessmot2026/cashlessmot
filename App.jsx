@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { Html5Qrcode } from 'html5-qrcode'
 import QRCode from 'qrcode'
+import { Capacitor } from '@capacitor/core'
+import { CapacitorNfc } from '@capgo/capacitor-nfc'
 
 /* =====================================================================
    CONFIGURACIÓN SUPABASE (anon key pública; las contraseñas viven en la BD)
@@ -111,8 +113,69 @@ function useQr(text, width) {
   useEffect(() => { let alive = true; if (text) qrUrl(text, width).then(u => alive && setUrl(u)); return () => { alive = false } }, [text, width])
   return url
 }
+/* --- NFC: nativo en el APK (plugin Capacitor) y Web NFC en Chrome Android --- */
+const IS_NATIVE = Capacitor.isNativePlatform()
+const hexId = bytes => (bytes || []).map(b => (b & 0xff).toString(16).padStart(2, '0').toUpperCase()).join(':')
+function nativeTagCodes(tag) {
+  const out = []
+  const dec = new TextDecoder()
+  for (const rec of tag?.ndefMessage || []) {
+    const p = Uint8Array.from((rec.payload || []).map(b => b & 0xff))
+    const type = (rec.type || []).map(b => b & 0xff)
+    if (rec.tnf === 1 && type[0] === 0x54 && p.length) out.push(dec.decode(p.slice(1 + (p[0] & 0x3f))))
+    else if (rec.tnf === 1 && type[0] === 0x55 && p.length) out.push(dec.decode(p.slice(1)))
+  }
+  if (tag?.id?.length) out.push(hexId(tag.id))
+  return out.map(s => s.trim()).filter(Boolean)
+}
+// Escucha tags NFC. Devuelve función para detener. onCodes recibe [textos del tag..., UID]
+async function startNfcListen(onCodes, setMsg) {
+  if (IS_NATIVE) {
+    const { supported } = await CapacitorNfc.isSupported().catch(() => ({ supported: false }))
+    if (!supported) { setMsg('Este teléfono no tiene NFC. Usa el QR o escribe el código.'); return () => {} }
+    const { status } = await CapacitorNfc.getStatus().catch(() => ({}))
+    if (status === 'NFC_DISABLED') { setMsg('⚠️ El NFC está apagado. Actívalo en los ajustes del teléfono.'); return () => {} }
+    const sub = await CapacitorNfc.addListener('nfcEvent', ev => { const c = nativeTagCodes(ev.tag); c.length && onCodes(c) })
+    await CapacitorNfc.startScanning({ invalidateAfterFirstRead: true, alertMessage: 'Acerca el tag NFC de la habitación' })
+    setMsg('📶 NFC activo: acerca el tag al teléfono')
+    return () => { sub.remove(); CapacitorNfc.stopScanning().catch(() => {}) }
+  }
+  if ('NDEFReader' in window) {
+    const ctrl = new AbortController()
+    const reader = new window.NDEFReader()
+    reader.onreading = e => {
+      const c = []
+      for (const rec of e.message.records) {
+        if (rec.recordType === 'text' || rec.recordType === 'url') { try { c.push(new TextDecoder(rec.encoding || 'utf-8').decode(rec.data)) } catch {} }
+      }
+      if (e.serialNumber) c.push(e.serialNumber.toUpperCase())
+      onCodes(c.map(s => s.trim()).filter(Boolean))
+    }
+    await reader.scan({ signal: ctrl.signal })
+    setMsg('📶 NFC activo: acerca el tag al teléfono')
+    return () => ctrl.abort()
+  }
+  setMsg('NFC no disponible en este navegador. Usa el QR, el APK o Chrome en Android.')
+  return () => {}
+}
 async function writeNfc(code) {
-  if (!('NDEFReader' in window)) throw new Error('Este dispositivo no permite grabar NFC. Usa la página web en Chrome para Android.')
+  if (IS_NATIVE) {
+    const { supported } = await CapacitorNfc.isSupported().catch(() => ({ supported: false }))
+    if (!supported) throw new Error('Este teléfono no tiene NFC')
+    const enc = new TextEncoder(), lang = [...enc.encode('es')]
+    const payload = [lang.length, ...lang, ...enc.encode(code)]
+    return new Promise((resolve, reject) => {
+      let sub
+      const done = () => { clearTimeout(t); sub?.remove(); CapacitorNfc.stopScanning().catch(() => {}) }
+      const t = setTimeout(() => { done(); reject(new Error('No se detectó ningún tag NFC')) }, 30000)
+      CapacitorNfc.addListener('nfcEvent', async () => {
+        try { await CapacitorNfc.write({ allowFormat: true, records: [{ tnf: 1, type: [0x54], id: [], payload }] }); done(); resolve() }
+        catch (e) { done(); reject(e) }
+      }).then(s => { sub = s; return CapacitorNfc.startScanning({ invalidateAfterFirstRead: false, alertMessage: 'Acerca el tag NFC para grabarlo' }) })
+        .catch(e => { done(); reject(e) })
+    })
+  }
+  if (!('NDEFReader' in window)) throw new Error('Este dispositivo no permite grabar NFC. Usa el APK o Chrome en Android.')
   await new window.NDEFReader().write({ records: [{ recordType: 'text', data: code }] })
 }
 async function printRoomCards(rooms) {
@@ -365,42 +428,37 @@ function Scanner({ title, onResult, onClose }) {
   const [nfcMsg, setNfcMsg] = useState('')
   const [manual, setManual] = useState('')
   const done = useRef(false)
-  const nfcCtrl = useRef(null)
-  const finish = (cands, method) => { if (done.current) return; done.current = true; onResult(cands.filter(Boolean), method) }
+  const stopNfc = useRef(() => {})
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
+  const finish = (cands, method) => { if (done.current) return; done.current = true; stopNfc.current(); onResult(cands.filter(Boolean), method) }
+
+  const readNfc = async () => {
+    stopNfc.current()
+    try {
+      const stop = await startNfcListen(c => finish(c, 'nfc'), setNfcMsg)
+      if (done.current || !mounted.current) stop(); else stopNfc.current = stop
+    }
+    catch (e) { setNfcMsg('Toca “Activar NFC” para leer el tag. ' + (e?.message || '')) }
+  }
 
   useEffect(() => {
     const qr = new Html5Qrcode('qr-reader')
     qr.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 220, height: 220 } }, text => finish([text], 'qr'), () => {})
       .catch(e => setErr('No se pudo abrir la cámara. ' + (e?.message || e)))
-    return () => { nfcCtrl.current?.abort(); try { if (qr.isScanning) qr.stop().then(() => qr.clear()).catch(() => {}) } catch {} }
+    readNfc() // el NFC se activa automáticamente junto con la cámara
+    return () => { stopNfc.current(); try { if (qr.isScanning) qr.stop().then(() => qr.clear()).catch(() => {}) } catch {} }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const readNfc = async () => {
-    if (!('NDEFReader' in window)) return setNfcMsg('NFC web no disponible en este dispositivo. Usa el QR o escribe el código.')
-    try {
-      const reader = new window.NDEFReader()
-      const ctrl = new AbortController(); nfcCtrl.current = ctrl
-      await reader.scan({ signal: ctrl.signal })
-      setNfcMsg('📶 Acerca el tag NFC al teléfono…')
-      reader.onreading = e => {
-        const cands = [e.serialNumber]
-        for (const rec of e.message.records) {
-          if (rec.recordType === 'text') { try { cands.push(new TextDecoder(rec.encoding || 'utf-8').decode(rec.data)) } catch {} }
-          if (rec.recordType === 'url') { try { cands.push(new TextDecoder().decode(rec.data)) } catch {} }
-        }
-        ctrl.abort(); finish(cands, 'nfc')
-      }
-    } catch (e) { setNfcMsg('Error NFC: ' + e.message) }
-  }
-
   return (
     <Modal title={title} onClose={onClose}>
+      <p className="muted small center">Apunta la cámara al QR <b>o acerca el tag NFC</b> al teléfono</p>
       <div id="qr-reader" className="qr-reader" />
       {err && <p className="err-text">{err}</p>}
-      <div className="row gap wrap mt">
-        <button className="btn" onClick={readNfc}>📶 Leer tag NFC</button>
-        {nfcMsg && <span className="muted small">{nfcMsg}</span>}
+      <div className="nfc-status">
+        <span>{nfcMsg || 'Activando NFC…'}</span>
+        <button className="btn sm" onClick={readNfc}>📶 Activar NFC</button>
       </div>
       <form className="row gap mt" onSubmit={e => { e.preventDefault(); manual.trim() && finish([manual.trim()], 'manual') }}>
         <input placeholder="o escribe el código (HAB-XXXX)" value={manual} onChange={e => setManual(e.target.value)} />
@@ -1785,6 +1843,7 @@ table.click tbody tr{cursor:pointer} table.click tbody tr:hover{background:var(-
 .mono{font-family:ui-monospace,Consolas,monospace;font-weight:700}
 .nfc-big{font-family:ui-monospace,Consolas,monospace;font-size:1.3rem;font-weight:800;padding:18px 12px;border:2px dashed var(--brand2);border-radius:12px;width:100%;color:var(--brand2)}
 details.card summary{cursor:pointer}
+.nfc-status{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding:10px 12px;border-radius:10px;background:#0e2a33;border:1px solid #22d3ee55;font-size:.85rem}
 @media (max-width:600px){.codes{grid-template-columns:1fr}}
 .pend{color:#fca5a5;font-weight:700}.okt{color:#86efac}
 .status{display:inline-block;font-size:.75rem;font-weight:700;padding:3px 9px;border-radius:99px;color:var(--c);background:color-mix(in srgb,var(--c) 18%,transparent);border:1px solid color-mix(in srgb,var(--c) 40%,transparent)}
