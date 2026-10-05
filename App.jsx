@@ -262,13 +262,13 @@ const codeMatches = (room, code) => [room.qr_code, room.nfc_tag].filter(Boolean)
 /* =====================================================================
    DATOS EN TIEMPO REAL
    ===================================================================== */
-const EMPTY = { rooms: [], products: [], promotions: [], occ: [], items: [], payments: [], waitlist: [], cleanings: [], biz: [], messages: [], audits: [], settings: {}, version: 0, loaded: false }
+const EMPTY = { rooms: [], products: [], promotions: [], categories: [], occ: [], items: [], payments: [], waitlist: [], cleanings: [], biz: [], messages: [], audits: [], settings: {}, version: 0, loaded: false }
 
 function useLive(enabled) {
   const [d, setD] = useState(EMPTY)
   const load = useCallback(async () => {
     try {
-      const [rooms, products, occ, waitlist, cleanings, biz, messages, audits, settings, promotions] = await Promise.all([
+      const [rooms, products, occ, waitlist, cleanings, biz, messages, audits, settings, promotions, categories] = await Promise.all([
         q(supabase.from('rooms').select('*')),
         q(supabase.from('products').select('*').order('name')),
         q(supabase.from('occupancies').select('*').eq('status', 'activa')),
@@ -278,7 +278,8 @@ function useLive(enabled) {
         q(supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('audit_requests').select('*').order('created_at', { ascending: false }).limit(100)),
         q(supabase.from('settings').select('*')),
-        q(supabase.from('promotions').select('*').order('created_at', { ascending: false }))
+        q(supabase.from('promotions').select('*').order('created_at', { ascending: false })),
+        q(supabase.from('room_categories').select('*').order('name')).catch(() => [])
       ])
       const ids = occ.map(o => o.id)
       let items = [], payments = []
@@ -289,7 +290,7 @@ function useLive(enabled) {
         ])
       }
       rooms.sort((a, b) => a.number.localeCompare(b.number, 'es', { numeric: true }))
-      setD(p => ({ rooms, products, occ, items, payments, waitlist, cleanings, biz, messages, audits, promotions,
+      setD(p => ({ rooms, products, occ, items, payments, waitlist, cleanings, biz, messages, audits, promotions, categories,
         settings: Object.fromEntries(settings.map(s => [s.key, s.value])), version: p.version + 1, loaded: true }))
     } catch (e) { fail(e) }
   }, [])
@@ -919,19 +920,24 @@ function RoomsTab({ d, user, reload, isSuper }) {
   const [edit, setEdit] = useState(null)
   const [qr, setQr] = useState(null)
   const [assign, setAssign] = useState(null)
-  const [form, setForm] = useState({ number: '', type: 'Estándar', price: '', hours_included: '', extra_hour_price: '' })
+  const cats = d.categories.filter(c => c.active)
+  const [form, setForm] = useState({ number: '', category_id: '', price: '', hours_included: '', extra_hour_price: '' })
+  const cat = cats.find(c => c.id === form.category_id) || cats[0]
   const add = async e => {
     e.preventDefault()
     if (!form.number.trim()) return toast('Número requerido', 'err')
-    const row = { number: form.number.trim(), type: form.type.trim() || 'Estándar', qr_code: genCode('HAB'), nfc_tag: genCode('NFC') }
+    if (d.categories.length && !cat) return toast('No hay categorías activas. El superadmin debe crear una.', 'err')
+    // El admin solo envía número y categoría: el valor llega por defecto desde la categoría
+    const row = { number: form.number.trim(), category_id: cat?.id || null, qr_code: genCode('HAB'), nfc_tag: genCode('NFC') }
     if (isSuper) for (const k of ['price', 'hours_included', 'extra_hour_price']) if (form[k] !== '') row[k] = Number(form[k])
-    try { await q(supabase.from('rooms').insert(row)); toast(`Habitación ${row.number} agregada`); setForm(f => ({ ...f, number: '' })); reload() } catch (err) { fail(err) }
+    try { await q(supabase.from('rooms').insert(row)); toast(`Habitación ${row.number} agregada${cat ? ` (${cat.name})` : ''}`); setForm(f => ({ ...f, number: '', price: '', hours_included: '', extra_hour_price: '' })); reload() } catch (err) { fail(err) }
   }
   const onAssign = async (cands, method) => {
     const room = assign; setAssign(null)
     const patch = method === 'nfc' ? { nfc_tag: cands[0] } : { qr_code: cands[0] }
     try { await q(supabase.from('rooms').update(patch).eq('id', room.id)); toast(`${method === 'nfc' ? 'Tag NFC' : 'Código QR'} asignado a la habitación ${room.number}`); reload() } catch (e) { fail(e) }
   }
+  const catName = r => d.categories.find(c => c.id === r.category_id)?.name || r.type
   return (
     <div className="stack">
       <div className="card">
@@ -941,28 +947,41 @@ function RoomsTab({ d, user, reload, isSuper }) {
         </div>
         <RoomGrid d={d} onPick={setOpen} showCodes />
       </div>
+
+      <CategoriesCard d={d} reload={reload} isSuper={isSuper} />
+
       <form className="card form" onSubmit={add}>
         <h3>➕ Agregar habitación</h3>
         <div className="cols5">
           <label>Número<input value={form.number} onChange={e => setForm({ ...form, number: e.target.value })} placeholder="101" /></label>
-          <label>Tipo<input value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} /></label>
+          <label>Categoría
+            <select value={cat?.id || ''} onChange={e => setForm({ ...form, category_id: e.target.value })} disabled={!cats.length}>
+              {!cats.length && <option value="">Sin categorías</option>}
+              {cats.map(c => <option key={c.id} value={c.id}>{c.name} · {money(c.price)}</option>)}
+            </select>
+          </label>
           {isSuper && <>
-            <label>Valor<input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder={`defecto ${money(d.settings.precio_habitacion)}`} /></label>
-            <label>Horas incluidas<input type="number" step="0.5" value={form.hours_included} onChange={e => setForm({ ...form, hours_included: e.target.value })} placeholder={d.settings.horas_incluidas} /></label>
-            <label>Hora extra<input type="number" value={form.extra_hour_price} onChange={e => setForm({ ...form, extra_hour_price: e.target.value })} placeholder={d.settings.valor_hora_extra} /></label>
+            <label>Valor<input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder={`categoría ${money(cat?.price ?? d.settings.precio_habitacion)}`} /></label>
+            <label>Horas incluidas<input type="number" step="0.5" value={form.hours_included} onChange={e => setForm({ ...form, hours_included: e.target.value })} placeholder={String(cat?.hours_included ?? d.settings.horas_incluidas ?? '')} /></label>
+            <label>Hora extra<input type="number" value={form.extra_hour_price} onChange={e => setForm({ ...form, extra_hour_price: e.target.value })} placeholder={String(cat?.extra_hour_price ?? d.settings.valor_hora_extra ?? '')} /></label>
           </>}
         </div>
-        {!isSuper && <p className="muted small">El valor es fijo por defecto ({money(d.settings.precio_habitacion)}); solo el superadmin lo modifica.</p>}
+        {isSuper
+          ? <p className="muted small">Deja el valor vacío para usar el precio de la categoría, o escribe un precio especial para esta habitación.</p>
+          : <div className="summary"><div><span>Valor por defecto ({cat?.name || 'general'})</span><b>{money(cat?.price ?? d.settings.precio_habitacion)}</b></div>
+            <div><span>Horas incluidas · hora extra</span><b>{Number(cat?.hours_included ?? d.settings.horas_incluidas ?? 0)} h · {money(cat?.extra_hour_price ?? d.settings.valor_hora_extra)}</b></div>
+            <p className="muted small" style={{ margin: 0 }}>El valor llega automáticamente de la categoría; solo el superadmin puede modificar precios.</p></div>}
         <button className="btn primary">Agregar</button>
       </form>
+
       <div className="card">
         <h3>Configuración</h3>
         <div className="table-wrap"><table>
-          <thead><tr><th>Hab.</th><th>Tipo</th><th>Estado</th><th className="r">Valor</th><th>Horas</th><th className="r">Hora extra</th><th>QR / NFC</th><th></th></tr></thead>
+          <thead><tr><th>Hab.</th><th>Categoría</th><th>Estado</th><th className="r">Valor</th><th>Horas</th><th className="r">Hora extra</th><th>QR / NFC</th><th></th></tr></thead>
           <tbody>{d.rooms.map(r => (
             <tr key={r.id}>
-              <td><b>{r.number}</b></td><td>{r.type}</td><td><StatusBadge s={r.status} /></td>
-              <td className="r">{money(r.price)}</td><td>{r.hours_included}</td><td className="r">{money(r.extra_hour_price)}</td>
+              <td><b>{r.number}</b></td><td>{catName(r)}</td><td><StatusBadge s={r.status} /></td>
+              <td className="r">{money(r.price)}</td><td>{Number(r.hours_included)}</td><td className="r">{money(r.extra_hour_price)}</td>
               <td className="small">{r.qr_code}<br /><span className="muted">{r.nfc_tag ? 'NFC ' + r.nfc_tag : 'sin NFC'}</span></td>
               <td className="row gap nowrap">
                 <button className="btn sm" onClick={() => setQr(r)}>QR / NFC</button>
@@ -974,19 +993,103 @@ function RoomsTab({ d, user, reload, isSuper }) {
         </table></div>
       </div>
       {open && <RoomModal room={open} d={d} user={user} reload={reload} onClose={() => setOpen(null)} />}
-      {edit && <RoomEdit room={edit} reload={reload} onClose={() => setEdit(null)} />}
+      {edit && <RoomEdit room={edit} d={d} reload={reload} onClose={() => setEdit(null)} />}
       {qr && <QrModal room={qr} onClose={() => setQr(null)} />}
       {assign && <Scanner title={`Asignar QR / NFC a la habitación ${assign.number}`} onResult={onAssign} onClose={() => setAssign(null)} />}
     </div>
   )
 }
 
-function RoomEdit({ room, reload, onClose }) {
-  const [f, setF] = useState({ number: room.number, type: room.type, price: room.price, hours_included: room.hours_included, extra_hour_price: room.extra_hour_price, nfc_tag: room.nfc_tag || '' })
+/* --- Categorías de habitación (precios: solo superadmin) --- */
+function CategoriesCard({ d, reload, isSuper }) {
+  const [f, setF] = useState({ name: '', price: '', hours_included: '', extra_hour_price: '', description: '' })
+  const [edit, setEdit] = useState(null)
+  const count = id => d.rooms.filter(r => r.category_id === id).length
+  const add = async e => {
+    e.preventDefault()
+    if (!f.name.trim()) return toast('Nombre de la categoría requerido', 'err')
+    if (!(Number(f.price) > 0)) return toast('Ingresa el valor de la categoría', 'err')
+    try {
+      await q(supabase.from('room_categories').insert({ name: f.name.trim(), description: f.description.trim() || null, price: Number(f.price),
+        hours_included: Number(f.hours_included || d.settings.horas_incluidas || 3), extra_hour_price: Number(f.extra_hour_price || d.settings.valor_hora_extra || 0) }))
+      toast(`Categoría ${f.name.trim()} creada`); setF({ name: '', price: '', hours_included: '', extra_hour_price: '', description: '' }); reload()
+    } catch (err) { fail(err) }
+  }
+  const toggle = async c => { try { await q(supabase.from('room_categories').update({ active: !c.active }).eq('id', c.id)); reload() } catch (e) { fail(e) } }
+  return (
+    <div className="card">
+      <h3>🏷️ Categorías de habitación</h3>
+      {isSuper && (
+        <form className="form mb" onSubmit={add}>
+          <div className="cols5">
+            <label>Nombre<input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Ej: Jacuzzi, Suite" /></label>
+            <label>Valor<input type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label>
+            <label>Horas incluidas<input type="number" step="0.5" value={f.hours_included} onChange={e => setF({ ...f, hours_included: e.target.value })} placeholder={d.settings.horas_incluidas} /></label>
+            <label>Hora extra<input type="number" value={f.extra_hour_price} onChange={e => setF({ ...f, extra_hour_price: e.target.value })} placeholder={d.settings.valor_hora_extra} /></label>
+            <label>Descripción<input value={f.description} onChange={e => setF({ ...f, description: e.target.value })} placeholder="Opcional" /></label>
+          </div>
+          <div><button className="btn primary">Crear categoría</button></div>
+        </form>
+      )}
+      <div className="table-wrap"><table>
+        <thead><tr><th>Categoría</th><th className="r">Valor</th><th>Horas</th><th className="r">Hora extra</th><th className="r">Habitaciones</th><th>Estado</th>{isSuper && <th></th>}</tr></thead>
+        <tbody>{d.categories.map(c => (
+          <tr key={c.id} className={c.active ? '' : 'dim'}>
+            <td><b>{c.name}</b>{c.description && <div className="muted small">{c.description}</div>}</td>
+            <td className="r">{money(c.price)}</td><td>{Number(c.hours_included)} h</td><td className="r">{money(c.extra_hour_price)}</td>
+            <td className="r">{count(c.id)}</td><td><span className={'pill ' + (c.active ? 'ok' : '')}>{c.active ? 'Activa' : 'Inactiva'}</span></td>
+            {isSuper && <td className="row gap nowrap"><button className="btn sm" onClick={() => setEdit(c)}>Editar</button><button className="btn sm ghost" onClick={() => toggle(c)}>{c.active ? 'Desactivar' : 'Activar'}</button></td>}
+          </tr>
+        ))}</tbody>
+      </table></div>
+      {!d.categories.length && <p className="muted">{isSuper ? 'Crea la primera categoría.' : 'El superadmin aún no ha creado categorías.'}</p>}
+      {!isSuper && <p className="muted small">Las categorías y sus precios los define el superadmin.</p>}
+      {edit && <CategoryEdit c={edit} rooms={count(edit.id)} reload={reload} onClose={() => setEdit(null)} />}
+    </div>
+  )
+}
+
+function CategoryEdit({ c, rooms, reload, onClose }) {
+  const [f, setF] = useState({ name: c.name, price: c.price, hours_included: c.hours_included, extra_hour_price: c.extra_hour_price, description: c.description || '' })
+  const [apply, setApply] = useState(true)
   const [del, setDel] = useState(false)
   const save = async () => {
     try {
-      await q(supabase.from('rooms').update({ ...f, price: Number(f.price), hours_included: Number(f.hours_included), extra_hour_price: Number(f.extra_hour_price), nfc_tag: f.nfc_tag || null }).eq('id', room.id))
+      const vals = { price: Number(f.price), hours_included: Number(f.hours_included), extra_hour_price: Number(f.extra_hour_price) }
+      await q(supabase.from('room_categories').update({ ...vals, name: f.name.trim(), description: f.description.trim() || null }).eq('id', c.id))
+      await q(supabase.from('rooms').update(apply ? { ...vals, type: f.name.trim() } : { type: f.name.trim() }).eq('category_id', c.id))
+      toast(`Categoría actualizada${apply && rooms ? ` y aplicada a ${rooms} habitación(es)` : ''}`); reload(); onClose()
+    } catch (e) { fail(e) }
+  }
+  const remove = async () => { try { await q(supabase.from('room_categories').delete().eq('id', c.id)); toast('Categoría eliminada'); reload(); onClose() } catch (e) { fail(e) } }
+  return (
+    <Modal title={`Editar categoría ${c.name}`} onClose={onClose}>
+      <div className="form cols2">
+        <label>Nombre<input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} /></label>
+        <label>Valor<input type="number" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label>
+        <label>Horas incluidas<input type="number" step="0.5" value={f.hours_included} onChange={e => setF({ ...f, hours_included: e.target.value })} /></label>
+        <label>Valor hora extra<input type="number" value={f.extra_hour_price} onChange={e => setF({ ...f, extra_hour_price: e.target.value })} /></label>
+        <label>Descripción<input value={f.description} onChange={e => setF({ ...f, description: e.target.value })} /></label>
+      </div>
+      {rooms > 0 && <label className="check mt"><input type="checkbox" checked={apply} onChange={e => setApply(e.target.checked)} /> Aplicar estos precios a las {rooms} habitación(es) de esta categoría</label>}
+      <p className="muted small">Los cambios aplican a nuevos ingresos; las cuentas abiertas conservan su valor.</p>
+      <div className="row gap mt">
+        <button className="btn primary" onClick={save}>Guardar</button>
+        {!del ? <button className="btn danger ghost" onClick={() => setDel(true)}>Eliminar</button>
+          : <button className="btn danger" onClick={remove}>Confirmar{rooms ? ` (${rooms} habitaciones quedarán sin categoría)` : ''}</button>}
+      </div>
+    </Modal>
+  )
+}
+
+function RoomEdit({ room, d, reload, onClose }) {
+  const [f, setF] = useState({ number: room.number, category_id: room.category_id || '', price: room.price, hours_included: room.hours_included, extra_hour_price: room.extra_hour_price, nfc_tag: room.nfc_tag || '' })
+  const [del, setDel] = useState(false)
+  const cat = d.categories.find(c => c.id === f.category_id)
+  const useCat = () => cat && setF({ ...f, price: cat.price, hours_included: cat.hours_included, extra_hour_price: cat.extra_hour_price })
+  const save = async () => {
+    try {
+      await q(supabase.from('rooms').update({ number: f.number, category_id: f.category_id || null, type: cat?.name || room.type, price: Number(f.price), hours_included: Number(f.hours_included), extra_hour_price: Number(f.extra_hour_price), nfc_tag: f.nfc_tag || null }).eq('id', room.id))
       toast('Habitación actualizada'); reload(); onClose()
     } catch (e) { fail(e) }
   }
@@ -994,9 +1097,16 @@ function RoomEdit({ room, reload, onClose }) {
   return (
     <Modal title={`Editar habitación ${room.number}`} onClose={onClose}>
       <div className="form cols2">
-        {[['number', 'Número'], ['type', 'Tipo'], ['price', 'Valor', 'number'], ['hours_included', 'Horas incluidas', 'number'], ['extra_hour_price', 'Valor hora extra', 'number'], ['nfc_tag', 'Tag NFC']].map(([k, l, t]) =>
-          <label key={k}>{l}<input type={t || 'text'} value={f[k]} onChange={e => setF({ ...f, [k]: e.target.value })} /></label>)}
+        <label>Número<input value={f.number} onChange={e => setF({ ...f, number: e.target.value })} /></label>
+        <label>Categoría<select value={f.category_id} onChange={e => setF({ ...f, category_id: e.target.value })}>
+          <option value="">Sin categoría</option>
+          {d.categories.map(c => <option key={c.id} value={c.id}>{c.name} · {money(c.price)}</option>)}
+        </select></label>
+        {[['price', 'Valor'], ['hours_included', 'Horas incluidas'], ['extra_hour_price', 'Valor hora extra']].map(([k, l]) =>
+          <label key={k}>{l}<input type="number" value={f[k]} onChange={e => setF({ ...f, [k]: e.target.value })} /></label>)}
+        <label>Tag NFC<input value={f.nfc_tag} onChange={e => setF({ ...f, nfc_tag: e.target.value })} /></label>
       </div>
+      {cat && <button className="btn sm mt" onClick={useCat}>Usar precios de la categoría {cat.name} ({money(cat.price)})</button>}
       <div className="row gap mt">
         <button className="btn primary" onClick={save}>Guardar</button>
         {!del ? <button className="btn danger ghost" onClick={() => setDel(true)}>Eliminar</button> : <button className="btn danger" onClick={remove}>Confirmar eliminación</button>}
