@@ -105,13 +105,13 @@ const codeMatches = (room, code) => [room.qr_code, room.nfc_tag].filter(Boolean)
 /* =====================================================================
    DATOS EN TIEMPO REAL
    ===================================================================== */
-const EMPTY = { rooms: [], products: [], occ: [], items: [], payments: [], waitlist: [], cleanings: [], biz: [], messages: [], audits: [], settings: {}, version: 0, loaded: false }
+const EMPTY = { rooms: [], products: [], promotions: [], occ: [], items: [], payments: [], waitlist: [], cleanings: [], biz: [], messages: [], audits: [], settings: {}, version: 0, loaded: false }
 
 function useLive(enabled) {
   const [d, setD] = useState(EMPTY)
   const load = useCallback(async () => {
     try {
-      const [rooms, products, occ, waitlist, cleanings, biz, messages, audits, settings] = await Promise.all([
+      const [rooms, products, occ, waitlist, cleanings, biz, messages, audits, settings, promotions] = await Promise.all([
         q(supabase.from('rooms').select('*')),
         q(supabase.from('products').select('*').order('name')),
         q(supabase.from('occupancies').select('*').eq('status', 'activa')),
@@ -120,7 +120,8 @@ function useLive(enabled) {
         q(supabase.from('business_inventory').select('*').order('name')),
         q(supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('audit_requests').select('*').order('created_at', { ascending: false }).limit(100)),
-        q(supabase.from('settings').select('*'))
+        q(supabase.from('settings').select('*')),
+        q(supabase.from('promotions').select('*').order('created_at', { ascending: false }))
       ])
       const ids = occ.map(o => o.id)
       let items = [], payments = []
@@ -131,7 +132,7 @@ function useLive(enabled) {
         ])
       }
       rooms.sort((a, b) => a.number.localeCompare(b.number, 'es', { numeric: true }))
-      setD(p => ({ rooms, products, occ, items, payments, waitlist, cleanings, biz, messages, audits,
+      setD(p => ({ rooms, products, occ, items, payments, waitlist, cleanings, biz, messages, audits, promotions,
         settings: Object.fromEntries(settings.map(s => [s.key, s.value])), version: p.version + 1, loaded: true }))
     } catch (e) { fail(e) }
   }, [])
@@ -210,7 +211,7 @@ function Login({ onLogin }) {
 }
 
 /* ---------------- SHELL ---------------- */
-const TABS_ADMIN = [['recepcion', '🛎️ Recepción'], ['habitaciones', '🛏️ Habitaciones'], ['inventario', '🍺 Inventario venta'], ['negocio', '🧴 Inventario negocio'], ['facturas', '🧾 Facturas'], ['chat', '💬 Chat']]
+const TABS_ADMIN = [['recepcion', '🛎️ Recepción'], ['habitaciones', '🛏️ Habitaciones'], ['promociones', '🏷️ Promociones'],['inventario', '🍺 Inventario venta'], ['negocio', '🧴 Inventario negocio'], ['facturas', '🧾 Facturas'], ['chat', '💬 Chat']]
 const TABS_SUPER = [['stats', '📊 Estadísticas'], ['historial', '📅 Historial'], ...TABS_ADMIN, ['pagos', '💳 Pagos'], ['limpiezas', '🧹 Limpiezas'], ['ajustes', '⚙️ Ajustes']]
 
 function Shell({ user, onLogout }) {
@@ -252,6 +253,7 @@ function Shell({ user, onLogout }) {
         {!d.loaded ? <div className="loading">Cargando…</div> : <>
           {tab === 'recepcion' && <Reception {...props} />}
           {tab === 'habitaciones' && <RoomsTab {...props} />}
+          {tab === 'promociones' && <PromotionsTab {...props} />}
           {tab === 'inventario' && <ProductsTab {...props} />}
           {tab === 'negocio' && <BizTab {...props} />}
           {tab === 'facturas' && <InvoicesTab {...props} />}
@@ -391,7 +393,7 @@ function RoomBubble({ r, d, selected, onClick }) {
     <button type="button" className={`bubble s-${r.status}${selected ? ' sel' : ''}${alert ? ' alert' : ''}`} style={{ '--c': STATUS[r.status].color }} onClick={() => onClick(r)}>
       <div className="b-top"><b className="b-num">{r.number}</b><span className="b-st">{STATUS[r.status].label}</span></div>
       {timer && <div className="b-timer">{timer}</div>}
-      {o && <div className="b-meta">{VEHICLES[o.vehicle_type].split(' ')[0]} {o.plate || ''}</div>}
+      {o && <div className="b-meta">{VEHICLES[o.vehicle_type].split(' ')[0]} {o.plate || ''}{o.promotion_name ? ` · 🏷️ ${o.promotion_name}` : ''}</div>}
       {sub && <div className="b-sub">{sub}</div>}
       {waits > 0 && <div className="b-wait">🔔 {waits} en espera</div>}
     </button>
@@ -415,16 +417,21 @@ function Reception({ d, user, reload }) {
   const [mode, setMode] = useState('final')
   const [method, setMethod] = useState('efectivo')
   const [waitId, setWaitId] = useState(null)
+  const [promoId, setPromoId] = useState(null)
   const [ask, setAsk] = useState(null)
   const [open, setOpen] = useState(null)
   const [busy, setBusy] = useState(false)
   const room = d.rooms.find(r => r.id === roomId)
+  const promos = d.promotions.filter(p => p.active)
+  const promo = promos.find(p => p.id === promoId)
 
   useEffect(() => { if (room && room.status !== 'disponible') setRoomId(null) }, [room])
+  useEffect(() => { if (promoId && !promo) setPromoId(null) }, [promoId, promo])
   const prodTotal = cartTotal(cart, d.products)
-  const total = (room ? Number(room.price) : 0) + prodTotal
+  const roomPrice = promo ? Number(promo.price) : room ? Number(room.price) : 0
+  const total = roomPrice + prodTotal
 
-  const reset = () => { setPlate(''); setRoomId(null); setCart({}); setMode('final'); setMethod('efectivo'); setWaitId(null) }
+  const reset = () => { setPlate(''); setRoomId(null); setCart({}); setMode('final'); setMethod('efectivo'); setWaitId(null); setPromoId(null) }
   const plateOk = () => { if (vehicle !== 'a_pie' && !plate.trim()) { toast('Ingresa la placa', 'err'); return false } return true }
 
   const submit = async e => {
@@ -436,7 +443,7 @@ function Reception({ d, user, reload }) {
       await rpc('register_occupancy', {
         p_room_id: room.id, p_vehicle_type: vehicle, p_plate: vehicle === 'a_pie' ? null : plate,
         p_payment_mode: mode, p_payment_method: mode === 'inmediato' ? method : null,
-        p_items: cartList(cart), p_user: user.username
+        p_items: cartList(cart), p_user: user.username, p_promotion_id: promo?.id || null
       })
       if (waitId) await supabase.from('waitlist').update({ status: 'atendido', resolved_at: new Date().toISOString() }).eq('id', waitId)
       toast(`✅ Habitación ${room.number} registrada. El contador inicia en 2 minutos`)
@@ -480,10 +487,17 @@ function Reception({ d, user, reload }) {
         <div className="frame"><RoomGrid d={d} selected={roomId} onPick={pick} /></div>
 
         {room && <>
-          <h3 className="sec">2 · Productos <span className="muted small">(opcional; también se pueden agregar después)</span></h3>
+          <h3 className="sec">2 · Tarifa</h3>
+          <div className="seg">
+            <button type="button" className={!promo ? 'on' : ''} onClick={() => setPromoId(null)}>Normal · {room.hours_included} h · {money(room.price)}</button>
+            {promos.map(p => <button type="button" key={p.id} className={promo?.id === p.id ? 'on' : ''} onClick={() => setPromoId(p.id)}>🏷️ {p.name} · {Number(p.hours)} h · {money(p.price)}</button>)}
+          </div>
+          {!promos.length && <p className="muted small">No hay promociones activas (créalas en la pestaña Promociones).</p>}
+
+          <h3 className="sec">3 · Productos <span className="muted small">(opcional; también se pueden agregar después)</span></h3>
           <ProductPicker products={d.products} cart={cart} setCart={setCart} />
 
-          <h3 className="sec">3 · Pago</h3>
+          <h3 className="sec">4 · Pago</h3>
           <div className="seg">
             <button type="button" className={mode === 'inmediato' ? 'on' : ''} onClick={() => setMode('inmediato')}>⚡ Pago inmediato</button>
             <button type="button" className={mode === 'final' ? 'on' : ''} onClick={() => setMode('final')}>🕒 Pagar al final (cuenta pendiente)</button>
@@ -494,7 +508,7 @@ function Reception({ d, user, reload }) {
           <p className="muted small">La cuenta queda abierta hasta liquidar la habitación (para consumos adicionales).</p>
 
           <div className="summary">
-            <div><span>Habitación {room.number} ({room.hours_included} h)</span><b>{money(room.price)}</b></div>
+            <div><span>Habitación {room.number} {promo ? `· 🏷️ ${promo.name} (${Number(promo.hours)} h)` : `(${room.hours_included} h)`}</span><b>{money(roomPrice)}</b></div>
             {prodTotal > 0 && <div><span>Productos</span><b>{money(prodTotal)}</b></div>}
             <div className="tot"><span>Total {mode === 'inmediato' ? 'a cobrar ahora' : 'pendiente'}</span><b>{money(total)}</b></div>
           </div>
@@ -630,7 +644,7 @@ function OccupancyPanel({ o, d, user, reload, onClose }) {
         <table>
           <thead><tr><th>Concepto</th><th>Hora</th><th>Cant.</th><th className="r">Valor</th></tr></thead>
           <tbody>
-            <tr><td>Habitación ({o.hours_included} h)</td><td>{hhmm(o.start_at)}</td><td>1</td><td className="r">{money(o.room_price)}</td></tr>
+            <tr><td>{o.promotion_name ? `🏷️ Promoción ${o.promotion_name}` : 'Habitación'} ({Number(o.hours_included)} h)</td><td>{hhmm(o.start_at)}</td><td>1</td><td className="r">{money(o.room_price)}</td></tr>
             {acc.extra > 0 && <tr className="warn-row"><td>Horas extra</td><td>—</td><td>{acc.extra / Number(o.extra_hour_price || 1)}</td><td className="r">{money(acc.extra)}</td></tr>}
             {items.map(i => <tr key={i.id}><td>{i.product_name}</td><td>{hhmm(i.created_at)}</td><td>{i.qty}</td><td className="r">{money(i.qty * i.unit_price)}</td></tr>)}
           </tbody>
@@ -808,6 +822,88 @@ function QrModal({ room, onClose }) {
         <p><b>{room.qr_code}</b></p>
         <p className="muted small">Imprime y pega este código dentro de la habitación. Se escanea para iniciar y terminar la limpieza.</p>
         {url && <a className="btn primary" href={url} download={`QR-hab-${room.number}.png`}>⬇️ Descargar</a>}
+      </div>
+    </Modal>
+  )
+}
+
+/* =====================================================================
+   PROMOCIONES (X horas por un valor)
+   ===================================================================== */
+function PromotionsTab({ d, user, reload, isSuper }) {
+  const [f, setF] = useState({ name: '', hours: '', price: '' })
+  const [edit, setEdit] = useState(null)
+  const [uses, setUses] = useState({})
+  useEffect(() => {
+    q(supabase.from('occupancies').select('promotion_id').not('promotion_id', 'is', null).limit(20000))
+      .then(rows => setUses(rows.reduce((m, r) => ({ ...m, [r.promotion_id]: (m[r.promotion_id] || 0) + 1 }), {}))).catch(fail)
+  }, [d.version])
+  const canEdit = p => isSuper || p.created_role === 'admin'
+  const add = async e => {
+    e.preventDefault()
+    if (!(Number(f.hours) > 0)) return toast('Las horas deben ser mayores a 0', 'err')
+    try {
+      await q(supabase.from('promotions').insert({ name: f.name.trim() || `${f.hours} horas`, hours: Number(f.hours), price: Number(f.price || 0), created_by: user.username, created_role: user.role }))
+      toast('Promoción creada'); setF({ name: '', hours: '', price: '' }); reload()
+    } catch (err) { fail(err) }
+  }
+  const toggle = async p => { try { await q(supabase.from('promotions').update({ active: !p.active }).eq('id', p.id)); reload() } catch (e) { fail(e) } }
+  return (
+    <div className="stack">
+      <form className="card form" onSubmit={add}>
+        <h2>🏷️ Nueva promoción</h2>
+        <div className="cols3">
+          <label>Nombre<input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Ej: Rato largo, Amanecida" /></label>
+          <label>Horas<input type="number" step="0.5" min="0.5" required value={f.hours} onChange={e => setF({ ...f, hours: e.target.value })} placeholder="Ej: 6" /></label>
+          <label>Valor<input type="number" min="0" required value={f.price} onChange={e => setF({ ...f, price: e.target.value })} placeholder="Ej: 70000" /></label>
+        </div>
+        {f.hours && f.price && <p className="muted small">Vista previa: <b>{f.name || `${f.hours} horas`}</b> · {f.hours} h por {money(f.price)} · creada por {isSuper ? '👑 superadmin' : '👤 admin'} ({user.username})</p>}
+        <button className="btn primary">Crear promoción</button>
+      </form>
+      <div className="card">
+        <h3>Promociones</h3>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Promoción</th><th>Horas</th><th className="r">Valor</th><th>Creada por</th><th className="r">Usos</th><th>Estado</th><th></th></tr></thead>
+          <tbody>{d.promotions.map(p => (
+            <tr key={p.id} className={p.active ? '' : 'dim'}>
+              <td><b>{p.name}</b></td><td>{Number(p.hours)} h</td><td className="r">{money(p.price)}</td>
+              <td>{p.created_role === 'superadmin' ? '👑' : '👤'} {p.created_by} <span className="muted small">· {dt(p.created_at)}</span></td>
+              <td className="r">{uses[p.id] || 0}</td>
+              <td><span className={'pill ' + (p.active ? 'ok' : '')}>{p.active ? 'Activa' : 'Inactiva'}</span></td>
+              <td className="row gap nowrap">
+                <button className="btn sm" onClick={() => toggle(p)}>{p.active ? 'Desactivar' : 'Activar'}</button>
+                {canEdit(p) && <button className="btn sm ghost" onClick={() => setEdit(p)}>Editar</button>}
+              </td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+        {!d.promotions.length && <p className="muted">Aún no hay promociones.</p>}
+        <p className="muted small">Las promociones activas aparecen en Recepción al elegir la habitación. Pasadas las horas de la promoción se cobra la hora extra de la habitación.{!isSuper && ' Las promociones creadas por el superadmin solo él las edita.'}</p>
+      </div>
+      {edit && <PromotionEdit p={edit} isSuper={isSuper} used={uses[edit.id] || 0} reload={reload} onClose={() => setEdit(null)} />}
+    </div>
+  )
+}
+
+function PromotionEdit({ p, isSuper, used, reload, onClose }) {
+  const [f, setF] = useState({ name: p.name, hours: p.hours, price: p.price })
+  const [del, setDel] = useState(false)
+  const save = async () => {
+    try { await q(supabase.from('promotions').update({ name: f.name, hours: Number(f.hours), price: Number(f.price) }).eq('id', p.id)); toast('Promoción actualizada'); reload(); onClose() } catch (e) { fail(e) }
+  }
+  const remove = async () => { try { await q(supabase.from('promotions').delete().eq('id', p.id)); toast('Promoción eliminada'); reload(); onClose() } catch (e) { fail(e) } }
+  return (
+    <Modal title={`Editar ${p.name}`} onClose={onClose}>
+      <div className="form cols3">
+        <label>Nombre<input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} /></label>
+        <label>Horas<input type="number" step="0.5" value={f.hours} onChange={e => setF({ ...f, hours: e.target.value })} /></label>
+        <label>Valor<input type="number" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label>
+      </div>
+      <p className="muted small">Los cambios aplican a nuevos registros; los usos anteriores conservan su valor.</p>
+      <div className="row gap mt">
+        <button className="btn primary" onClick={save}>Guardar</button>
+        {isSuper && (!del ? <button className="btn danger ghost" onClick={() => setDel(true)}>Eliminar</button>
+          : <button className="btn danger" onClick={remove}>Confirmar{used ? ` (tiene ${used} usos; las estadísticas conservan el nombre)` : ''}</button>)}
       </div>
     </Modal>
   )
@@ -1214,12 +1310,20 @@ function StatsTab({ d }) {
       const buy = Math.max(Math.ceil(daily * 7 + p.min_stock - p.stock), p.stock <= p.min_stock ? p.min_stock * 2 - p.stock : 0)
       return { p, sold7, daysLeft, buy }
     }).filter(x => x.buy > 0 && (x.p.stock <= x.p.min_stock || x.daysLeft < 4)).sort((a, b) => a.daysLeft - b.daysLeft)
+    const promoOcc = occ.filter(o => o.promotion_id || o.promotion_name)
+    const byPromo = Object.entries(groupBy(promoOcc, o => o.promotion_id || o.promotion_name)).map(([id, v]) => {
+      const p = d.promotions.find(x => x.id === id)
+      const ms = v.map(occMinutes).filter(x => x != null)
+      return { id, name: p?.name || v[0].promotion_name, p, uses: v.length, revenue: sum(v, o => o.room_price), avg: ms.length ? sum(ms, x => x) / ms.length : null,
+        extraUses: v.filter(o => Number(o.extra_charge) > 0).length }
+    }).sort((a, b) => b.uses - a.uses)
     return {
+      promoOcc, byPromo,
       occ, done, income: sum(pays, p => p.amount), cash: sum(pays.filter(p => p.method === 'efectivo'), p => p.amount), transfer: sum(pays.filter(p => p.method === 'transferencia'), p => p.amount),
       prodSales: sum(items, i => i.qty * i.unit_price), avgUse: done.length ? sum(done, occMinutes) / done.length : null,
       avgClean: cls.length ? sum(cls, c => c.duration_seconds) / cls.length / 60 : null, cls, byRoom, byProd, byDay, clByRoom, suggest
     }
-  }, [raw, d.products])
+  }, [raw, d.products, d.promotions])
 
   const out = d.products.filter(p => p.active && p.stock <= 0)
   const low = d.products.filter(p => p.active && p.stock > 0 && p.stock <= p.min_stock)
@@ -1237,6 +1341,18 @@ function StatsTab({ d }) {
           <Kpi label="Tiempo promedio de uso" value={mins(s.avgUse)} />
           <Kpi label="Tiempo promedio limpieza" value={mins(s.avgClean)} sub={`${s.cls.length} limpiezas`} />
           <Kpi label="Habitación más usada" value={s.byRoom[0]?.label || '—'} sub={s.byRoom[0] ? `${s.byRoom[0].value} usos` : ''} />
+          <Kpi label="Promociones usadas" value={s.promoOcc.length} sub={s.occ.length ? `${Math.round((s.promoOcc.length / s.occ.length) * 100)}% de las ocupaciones · ${money(sum(s.promoOcc, o => o.room_price))}` : ''} />
+        </div>
+        <div className="card">
+          <h3>🏷️ Uso de promociones</h3>
+          {!s.byPromo.length ? <p className="muted">No se usaron promociones en este periodo.</p> : <>
+            <Bars data={s.byPromo.map(x => ({ label: x.name, value: x.uses, extra: money(x.revenue) }))} fmt={v => v + ' usos'} />
+            <div className="table-wrap mt"><table>
+              <thead><tr><th>Promoción</th><th>Horas</th><th className="r">Valor</th><th>Creada por</th><th className="r">Usos</th><th className="r">Ingreso tarifa</th><th>Tiempo prom.</th><th className="r">Con horas extra</th></tr></thead>
+              <tbody>{s.byPromo.map(x => <tr key={x.id}><td><b>{x.name}</b>{x.p && !x.p.active && <span className="muted small"> (inactiva)</span>}</td><td>{x.p ? Number(x.p.hours) : '—'}</td><td className="r">{x.p ? money(x.p.price) : '—'}</td>
+                <td>{x.p ? `${x.p.created_role === 'superadmin' ? '👑' : '👤'} ${x.p.created_by}` : '—'}</td><td className="r">{x.uses}</td><td className="r">{money(x.revenue)}</td><td>{mins(x.avg)}</td><td className="r">{x.extraUses}</td></tr>)}</tbody>
+            </table></div>
+          </>}
         </div>
         <div className="cols2 gap">
           <div className="card"><h3>🛏️ Uso por habitación</h3><Bars data={s.byRoom} fmt={v => v + ' usos'} /></div>
@@ -1306,10 +1422,10 @@ function HistoryTab({ d }) {
         <div className="card">
           <h3>Ocupaciones <span className="muted small">(clic para ver el detalle)</span></h3>
           <div className="table-wrap"><table className="click">
-            <thead><tr><th>Hab.</th><th>Ingreso</th><th>Inicio</th><th>Salida</th><th>Tiempo</th><th>Vehículo</th><th className="r">Productos</th><th className="r">Total</th><th>Estado</th></tr></thead>
+            <thead><tr><th>Hab.</th><th>Ingreso</th><th>Inicio</th><th>Salida</th><th>Tiempo</th><th>Vehículo</th><th>Tarifa</th><th className="r">Productos</th><th className="r">Total</th><th>Estado</th></tr></thead>
             <tbody>{data.occ.map(o => {
               const it = data.items.filter(i => i.occupancy_id === o.id)
-              return <tr key={o.id} onClick={() => setDetail(o)}><td><b>{o.room_number}</b></td><td>{hhmm(o.registered_at)}</td><td>{hhmm(o.start_at)}</td><td>{hhmm(o.end_at)}</td><td>{mins(occMinutes(o))}</td><td>{VEHICLES[o.vehicle_type]} {o.plate}</td><td className="r">{sum(it, i => i.qty)}</td><td className="r">{money(o.status === 'activa' ? account(o, it, [], Date.now()).total : o.total)}</td><td>{o.status}</td></tr>
+              return <tr key={o.id} onClick={() => setDetail(o)}><td><b>{o.room_number}</b></td><td>{hhmm(o.registered_at)}</td><td>{hhmm(o.start_at)}</td><td>{hhmm(o.end_at)}</td><td>{mins(occMinutes(o))}</td><td>{VEHICLES[o.vehicle_type]} {o.plate}</td><td>{o.promotion_name ? `🏷️ ${o.promotion_name}` : 'Normal'}</td><td className="r">{sum(it, i => i.qty)}</td><td className="r">{money(o.status === 'activa' ? account(o, it, [], Date.now()).total : o.total)}</td><td>{o.status}</td></tr>
             })}</tbody>
           </table></div>
           {!data.occ.length && <p className="muted">Sin ocupaciones este día</p>}
@@ -1348,7 +1464,7 @@ function OccupancyDetail({ o, items, pays, onClose }) {
       <h4>Consumos</h4>
       <table><thead><tr><th>Hora</th><th>Producto</th><th className="r">Cant.</th><th className="r">Unit.</th><th className="r">Total</th></tr></thead>
         <tbody>
-          <tr><td>{hhmm(o.start_at)}</td><td>Habitación</td><td className="r">1</td><td className="r">{money(o.room_price)}</td><td className="r">{money(o.room_price)}</td></tr>
+          <tr><td>{hhmm(o.start_at)}</td><td>{o.promotion_name ? `🏷️ Promoción ${o.promotion_name}` : 'Habitación'}</td><td className="r">1</td><td className="r">{money(o.room_price)}</td><td className="r">{money(o.room_price)}</td></tr>
           {acc.extra > 0 && <tr><td>—</td><td>Horas extra</td><td></td><td></td><td className="r">{money(acc.extra)}</td></tr>}
           {items.map(i => <tr key={i.id}><td>{hhmm(i.created_at)}</td><td>{i.product_name}</td><td className="r">{i.qty}</td><td className="r">{money(i.unit_price)}</td><td className="r">{money(i.qty * i.unit_price)}</td></tr>)}
         </tbody>
