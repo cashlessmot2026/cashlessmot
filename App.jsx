@@ -13,6 +13,7 @@ const SUPABASE_URL = 'https://fgzxxzkeumpshegibzek.supabase.co'
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZnenh4emtldW1wc2hlZ2liemVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4MTMxNDMsImV4cCI6MjEwNjM4OTE0M30.yAHjORgL03vDgO3dxSoLanwO_E3FGmz9ToCsvan8sDM'
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } })
 const BUCKET = 'motel'
+const APP_VERSION = 'v1.10'
 
 /* =====================================================================
    UTILIDADES
@@ -404,7 +405,7 @@ function Shell({ user, onLogout }) {
   return (
     <div className="shell">
       <header className="top">
-        <div className="brand"><span className="logo">🏨</span><div><b>Motel Control</b><div className="muted small">{isSuper ? '👑 Super Admin' : '👤 Administrador'}</div></div></div>
+        <div className="brand"><span className="logo">🏨</span><div><b>Motel Control</b><div className="muted small">{isSuper ? '👑 Super Admin' : '👤 Administrador'} · {IS_NATIVE ? 'App' : 'Web'} {APP_VERSION}</div></div></div>
         <div className="chips hide-sm">
           {Object.entries(STATUS).map(([k, s]) => <span key={k} className="chip" style={{ '--c': s.color }}><i />{s.label}: <b>{counts[k]}</b></span>)}
         </div>
@@ -515,7 +516,7 @@ function Scanner({ title, onResult, onClose }) {
       const stop = await startNfcListen(c => finish(c, 'nfc'), setNfcMsg)
       if (done.current || !mounted.current) stop(); else stopNfc.current = stop
     }
-    catch (e) { setNfcMsg('Toca “Activar NFC” para leer el tag. ' + (e?.message || '')) }
+    catch (e) { setNfcMsg('⚠️ No se pudo activar el NFC: ' + (e?.message || e) + '. Toca “Activar NFC” para reintentar.') }
   }
 
   useEffect(() => {
@@ -534,8 +535,12 @@ function Scanner({ title, onResult, onClose }) {
       {err && <p className="err-text">{err}</p>}
       <div className="nfc-status">
         <span>{nfcMsg || 'Activando NFC…'}</span>
-        <button className="btn sm" onClick={readNfc}>📶 Activar NFC</button>
+        <div className="row gap">
+          {IS_NATIVE && nfcMsg.includes('apagado') && <button className="btn sm" onClick={() => CapacitorNfc.showSettings().catch(() => {})}>⚙️ Ajustes NFC</button>}
+          <button className="btn sm" onClick={readNfc}>📶 Activar NFC</button>
+        </div>
       </div>
+      <p className="muted small">Mantén el tag pegado a la parte trasera del teléfono (zona del NFC) 1–2 segundos. {IS_NATIVE ? 'App' : 'Web'} {APP_VERSION}</p>
       <form className="row gap mt" onSubmit={e => { e.preventDefault(); manual.trim() && finish([manual.trim()], 'manual') }}>
         <input placeholder="o escribe el código (HAB-XXXX)" value={manual} onChange={e => setManual(e.target.value)} />
         <button className="btn">OK</button>
@@ -879,10 +884,27 @@ function CleaningPanel({ room, cleaning, user, reload, onClose }) {
   const [scan, setScan] = useState(false)
   const [photo, setPhoto] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [link, setLink] = useState(null) // tag NFC leído que aún no está vinculado a esta habitación
   const onScan = async (cands, method) => {
     setScan(false)
     const code = pickCode(room, cands)
-    if (!codeMatches(room, code)) return toast(`El código no corresponde a la habitación ${room.number}`, 'err')
+    if (!codeMatches(room, code)) {
+      if (method === 'nfc') return setLink(cands[0])
+      return toast(`El código ${code || ''} no corresponde a la habitación ${room.number}`, 'err')
+    }
+    proceed(code, method)
+  }
+  const linkAndProceed = async () => {
+    const code = link
+    try {
+      const other = await q(supabase.from('rooms').select('number').eq('nfc_tag', code).neq('id', room.id).limit(1))
+      if (other.length) { setLink(null); return toast(`Este tag ya pertenece a la habitación ${other[0].number}`, 'err') }
+      await q(supabase.from('rooms').update({ nfc_tag: code }).eq('id', room.id))
+      toast(`📶 Tag vinculado a la habitación ${room.number}`)
+      setLink(null); proceed(code, 'nfc')
+    } catch (e) { fail(e) }
+  }
+  const proceed = async (code, method) => {
     setBusy(true)
     try {
       if (!cleaning) {
@@ -911,6 +933,13 @@ function CleaningPanel({ room, cleaning, user, reload, onClose }) {
           <PhotoInput file={photo} setFile={setPhoto} label="📷 Foto de la limpieza (obligatoria)" />
           <button className="btn primary lg block mt" disabled={busy || !photo} onClick={() => setScan(true)}>{busy ? 'Guardando…' : '✅ Escanear para terminar'}</button>
         </>}
+      {link && (
+        <div className="confirm mt">
+          <p>📶 Se leyó el tag <b className="mono">{link}</b>, pero no está vinculado a la habitación <b>{room.number}</b>.</p>
+          <p className="muted small">Si este es el tag pegado en esta habitación, vincúlalo y la limpieza continuará. Desde ahora este tag identificará a la habitación {room.number}.</p>
+          <div className="row gap wrap"><button className="btn primary" disabled={busy} onClick={linkAndProceed}>Vincular tag y {cleaning ? 'terminar' : 'iniciar'} limpieza</button><button className="btn ghost" onClick={() => setLink(null)}>Cancelar</button></div>
+        </div>
+      )}
       {scan && <Scanner title={`Escanear habitación ${room.number}`} onResult={onScan} onClose={() => setScan(false)} />}
     </div>
   )
