@@ -1,0 +1,6 @@
+{
+  "appId": "com.cashlessmot.motel",
+  "appName": "Motel Control",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}
