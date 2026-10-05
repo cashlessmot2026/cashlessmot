@@ -98,6 +98,37 @@ async function uploadImage(file, folder) {
 const cartList = cart => Object.entries(cart).filter(([, n]) => n > 0).map(([product_id, qty]) => ({ product_id, qty }))
 const cartTotal = (cart, products) => sum(cartList(cart), i => i.qty * (products.find(p => p.id === i.product_id)?.price || 0))
 
+/* --- Códigos QR / NFC --- */
+const genCode = prefix => prefix + '-' + Array.from(crypto.getRandomValues(new Uint8Array(4))).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase()
+const qrCache = new Map()
+const qrUrl = (text, width = 260) => {
+  const k = text + '|' + width
+  if (!qrCache.has(k)) qrCache.set(k, QRCode.toDataURL(text, { width, margin: 1 }))
+  return qrCache.get(k)
+}
+function useQr(text, width) {
+  const [url, setUrl] = useState('')
+  useEffect(() => { let alive = true; if (text) qrUrl(text, width).then(u => alive && setUrl(u)); return () => { alive = false } }, [text, width])
+  return url
+}
+async function writeNfc(code) {
+  if (!('NDEFReader' in window)) throw new Error('Este dispositivo no permite grabar NFC. Usa la página web en Chrome para Android.')
+  await new window.NDEFReader().write({ records: [{ recordType: 'text', data: code }] })
+}
+async function printRoomCards(rooms) {
+  const cards = await Promise.all(rooms.map(async r => `
+    <div class="card"><h2>Habitación ${r.number}</h2><img src="${await qrUrl(r.qr_code, 400)}"/>
+    <p><b>QR:</b> ${r.qr_code}</p><p><b>NFC:</b> ${r.nfc_tag || '—'}</p></div>`))
+  const w = window.open('', '_blank')
+  if (!w) return toast('Permite las ventanas emergentes para imprimir', 'err')
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Tarjetas de habitaciones</title><style>
+    body{font-family:Arial,sans-serif;margin:0;padding:10mm}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8mm}
+    .card{border:2px dashed #999;border-radius:10px;padding:6mm;text-align:center;page-break-inside:avoid}
+    .card h2{margin:0 0 4mm;font-size:16pt}.card img{width:45mm;height:45mm}.card p{margin:2mm 0;font-size:10pt;font-family:monospace}
+  </style></head><body><div class="grid">${cards.join('')}</div><script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`)
+  w.document.close()
+}
+
 const norm = s => String(s || '').trim().toUpperCase()
 const pickCode = (room, cands) => { const keys = [room.qr_code, room.nfc_tag].filter(Boolean).map(norm); return cands.find(c => keys.includes(norm(c))) || cands[0] }
 const codeMatches = (room, code) => [room.qr_code, room.nfc_tag].filter(Boolean).map(norm).includes(norm(code))
@@ -222,6 +253,14 @@ function Shell({ user, onLogout }) {
   const seenKey = 'motel_seen_' + user.role
   const [seen, setSeen] = useState(() => store.get(seenKey, ''))
   useEffect(() => store.set('motel_tab_' + user.role, tab), [tab, user.role])
+  // Toda habitación debe tener código NFC: se genera automáticamente si falta
+  const filling = useRef(new Set())
+  useEffect(() => {
+    const missing = d.rooms.filter(r => !r.nfc_tag && !filling.current.has(r.id))
+    if (!missing.length) return
+    missing.forEach(r => filling.current.add(r.id))
+    Promise.all(missing.map(r => supabase.from('rooms').update({ nfc_tag: genCode('NFC') }).eq('id', r.id).is('nfc_tag', null))).then(reload)
+  }, [d.rooms, reload])
   useEffect(() => {
     if (tab === 'chat' && d.messages[0]) { setSeen(d.messages[0].created_at); store.set(seenKey, d.messages[0].created_at) }
   }, [tab, d.messages, seenKey])
@@ -374,7 +413,20 @@ function Scanner({ title, onResult, onClose }) {
 /* =====================================================================
    BURBUJAS DE HABITACIONES
    ===================================================================== */
-function RoomBubble({ r, d, selected, onClick }) {
+function RoomCodes({ r }) {
+  const qr = useQr(r.qr_code, 160)
+  return (
+    <div className="b-codes">
+      {qr ? <img src={qr} alt={'QR ' + r.number} /> : <div className="qr-ph" />}
+      <div className="b-code-txt">
+        <span><small>QR</small>{r.qr_code}</span>
+        <span><small>NFC</small>{r.nfc_tag || 'generando…'}</span>
+      </div>
+    </div>
+  )
+}
+
+function RoomBubble({ r, d, selected, onClick, showCodes }) {
   const now = useNow()
   const o = d.occ.find(x => x.room_id === r.id)
   const c = d.cleanings.find(x => x.room_id === r.id)
@@ -396,12 +448,13 @@ function RoomBubble({ r, d, selected, onClick }) {
       {o && <div className="b-meta">{VEHICLES[o.vehicle_type].split(' ')[0]} {o.plate || ''}{o.promotion_name ? ` · 🏷️ ${o.promotion_name}` : ''}</div>}
       {sub && <div className="b-sub">{sub}</div>}
       {waits > 0 && <div className="b-wait">🔔 {waits} en espera</div>}
+      {showCodes && <RoomCodes r={r} />}
     </button>
   )
 }
-const RoomGrid = ({ d, selected, onPick }) => (
-  <div className="grid">
-    {d.rooms.map(r => <RoomBubble key={r.id} r={r} d={d} selected={selected === r.id} onClick={onPick} />)}
+const RoomGrid = ({ d, selected, onPick, showCodes }) => (
+  <div className={'grid' + (showCodes ? ' wide-cards' : '')}>
+    {d.rooms.map(r => <RoomBubble key={r.id} r={r} d={d} selected={selected === r.id} onClick={onPick} showCodes={showCodes} />)}
     {!d.rooms.length && <p className="muted">No hay habitaciones. Agrégalas en la pestaña Habitaciones.</p>}
   </div>
 )
@@ -601,6 +654,10 @@ function RoomModal({ room: r0, d, user, reload, onClose }) {
           </div>
         </div>
       )}
+      <details className="card inner">
+        <summary><b>🔳 Códigos QR / NFC de la habitación</b></summary>
+        <CodesPanel room={room} />
+      </details>
       {waits.length > 0 && (
         <div className="card inner">
           <h4>🔔 En espera de esta habitación</h4>
@@ -733,7 +790,7 @@ function RoomsTab({ d, user, reload, isSuper }) {
   const add = async e => {
     e.preventDefault()
     if (!form.number.trim()) return toast('Número requerido', 'err')
-    const row = { number: form.number.trim(), type: form.type.trim() || 'Estándar' }
+    const row = { number: form.number.trim(), type: form.type.trim() || 'Estándar', qr_code: genCode('HAB'), nfc_tag: genCode('NFC') }
     if (isSuper) for (const k of ['price', 'hours_included', 'extra_hour_price']) if (form[k] !== '') row[k] = Number(form[k])
     try { await q(supabase.from('rooms').insert(row)); toast(`Habitación ${row.number} agregada`); setForm(f => ({ ...f, number: '' })); reload() } catch (err) { fail(err) }
   }
@@ -745,8 +802,11 @@ function RoomsTab({ d, user, reload, isSuper }) {
   return (
     <div className="stack">
       <div className="card">
-        <h2>Tablero de habitaciones</h2>
-        <RoomGrid d={d} onPick={setOpen} />
+        <div className="row between wrap gap mb">
+          <h2 style={{ margin: 0 }}>Tablero de habitaciones</h2>
+          <button className="btn" onClick={() => printRoomCards(d.rooms)} disabled={!d.rooms.length}>🖨️ Imprimir tarjetas QR / NFC</button>
+        </div>
+        <RoomGrid d={d} onPick={setOpen} showCodes />
       </div>
       <form className="card form" onSubmit={add}>
         <h3>➕ Agregar habitación</h3>
@@ -772,7 +832,7 @@ function RoomsTab({ d, user, reload, isSuper }) {
               <td className="r">{money(r.price)}</td><td>{r.hours_included}</td><td className="r">{money(r.extra_hour_price)}</td>
               <td className="small">{r.qr_code}<br /><span className="muted">{r.nfc_tag ? 'NFC ' + r.nfc_tag : 'sin NFC'}</span></td>
               <td className="row gap nowrap">
-                <button className="btn sm" onClick={() => setQr(r)}>QR</button>
+                <button className="btn sm" onClick={() => setQr(r)}>QR / NFC</button>
                 <button className="btn sm" onClick={() => setAssign(r)}>Asignar</button>
                 {isSuper && <button className="btn sm" onClick={() => setEdit(r)}>Editar</button>}
               </td>
@@ -812,17 +872,37 @@ function RoomEdit({ room, reload, onClose }) {
   )
 }
 
-function QrModal({ room, onClose }) {
-  const [url, setUrl] = useState('')
-  useEffect(() => { QRCode.toDataURL(room.qr_code, { width: 360, margin: 2 }).then(setUrl) }, [room.qr_code])
+function CodesPanel({ room }) {
+  const url = useQr(room.qr_code, 360)
+  const [writing, setWriting] = useState(false)
+  const write = async () => {
+    setWriting(true)
+    try { toast('📶 Acerca el tag NFC al teléfono…'); await writeNfc(room.nfc_tag); toast(`Tag NFC grabado para la habitación ${room.number}`) }
+    catch (e) { fail(e) } finally { setWriting(false) }
+  }
   return (
-    <Modal title={`QR habitación ${room.number}`} onClose={onClose}>
-      <div className="center">
+    <div className="codes">
+      <div className="code-box">
+        <h4>📷 Código QR</h4>
         {url && <img src={url} alt="QR" className="qr-img" />}
-        <p><b>{room.qr_code}</b></p>
-        <p className="muted small">Imprime y pega este código dentro de la habitación. Se escanea para iniciar y terminar la limpieza.</p>
-        {url && <a className="btn primary" href={url} download={`QR-hab-${room.number}.png`}>⬇️ Descargar</a>}
+        <p className="mono">{room.qr_code}</p>
+        {url && <a className="btn sm primary" href={url} download={`QR-hab-${room.number}.png`}>⬇️ Descargar QR</a>}
       </div>
+      <div className="code-box">
+        <h4>📶 Código NFC</h4>
+        <div className="nfc-big">{room.nfc_tag || 'generando…'}</div>
+        <button className="btn sm primary" disabled={!room.nfc_tag || writing} onClick={write}>{writing ? 'Esperando tag…' : '✍️ Grabar en tag NFC'}</button>
+        <p className="muted small">Graba este código en un tag NFC (Chrome en Android) y pégalo en la habitación. También sirve escribirlo a mano en el escáner.</p>
+      </div>
+    </div>
+  )
+}
+
+function QrModal({ room, onClose }) {
+  return (
+    <Modal title={`Códigos · habitación ${room.number}`} onClose={onClose} wide>
+      <CodesPanel room={room} />
+      <p className="muted small">Se escanea el QR o el tag NFC para iniciar y terminar la limpieza de esta habitación.</p>
     </Modal>
   )
 }
@@ -1694,6 +1774,18 @@ table.click tbody tr{cursor:pointer} table.click tbody tr:hover{background:var(-
 .b-timer{font-variant-numeric:tabular-nums;font-weight:700;font-size:1.05rem}
 .b-meta,.b-sub{font-size:.78rem}
 .b-wait{font-size:.75rem;color:var(--warn);font-weight:700}
+.grid.wide-cards{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+.b-codes{display:flex;gap:8px;align-items:center;margin-top:6px;padding-top:8px;border-top:1px dashed color-mix(in srgb,var(--c) 40%,transparent)}
+.b-codes img,.qr-ph{width:64px;height:64px;border-radius:6px;background:#fff;flex:none}
+.b-code-txt{display:flex;flex-direction:column;gap:4px;font-family:ui-monospace,Consolas,monospace;font-size:.72rem;word-break:break-all}
+.b-code-txt small{display:inline-block;min-width:30px;font-family:inherit;font-weight:700;color:var(--muted)}
+.codes{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.code-box{background:#0a0f1e;border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.code-box h4{margin:0}
+.mono{font-family:ui-monospace,Consolas,monospace;font-weight:700}
+.nfc-big{font-family:ui-monospace,Consolas,monospace;font-size:1.3rem;font-weight:800;padding:18px 12px;border:2px dashed var(--brand2);border-radius:12px;width:100%;color:var(--brand2)}
+details.card summary{cursor:pointer}
+@media (max-width:600px){.codes{grid-template-columns:1fr}}
 .pend{color:#fca5a5;font-weight:700}.okt{color:#86efac}
 .status{display:inline-block;font-size:.75rem;font-weight:700;padding:3px 9px;border-radius:99px;color:var(--c);background:color-mix(in srgb,var(--c) 18%,transparent);border:1px solid color-mix(in srgb,var(--c) 40%,transparent)}
 .pill{display:inline-block;font-size:.75rem;font-weight:700;padding:3px 9px;border-radius:99px;background:var(--panel2);border:1px solid var(--line)}
