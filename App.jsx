@@ -181,7 +181,7 @@ async function writeNfc(code) {
 }
 async function printRoomCards(rooms) {
   const cards = await Promise.all(rooms.map(async r => `
-    <div class="card"><h2>Habitación ${r.number}</h2><img src="${await qrUrl(r.qr_code, 400)}"/>
+    <div class="card"><h2>Habitación ${r.number}${r.type ? ` - ${r.type}` : ''}</h2><img src="${await qrUrl(r.qr_code, 400)}"/>
     <p><b>QR:</b> ${r.qr_code}</p><p><b>NFC:</b> ${r.nfc_tag || '—'}</p></div>`))
   const w = window.open('', '_blank')
   if (!w) return toast('Permite las ventanas emergentes para imprimir', 'err')
@@ -565,6 +565,7 @@ function RoomBubble({ r, d, selected, onClick, showCodes }) {
   const o = d.occ.find(x => x.room_id === r.id)
   const c = d.cleanings.find(x => x.room_id === r.id)
   const waits = d.waitlist.filter(w => w.room_id === r.id).length
+  const catName = d.categories.find(x => x.id === r.category_id)?.name || r.type
   let timer = null, sub = null, alert = false
   if (r.status === 'ocupado' && o) {
     const st = new Date(o.start_at).getTime()
@@ -577,7 +578,10 @@ function RoomBubble({ r, d, selected, onClick, showCodes }) {
   if (r.status === 'no_disponible' && r.status_note) sub = <span className="muted">{r.status_note}</span>
   return (
     <button type="button" className={`bubble s-${r.status}${selected ? ' sel' : ''}${alert ? ' alert' : ''}`} style={{ '--c': STATUS[r.status].color }} onClick={() => onClick(r)}>
-      <div className="b-top"><b className="b-num">{r.number}</b><span className="b-st">{STATUS[r.status].label}</span></div>
+      <div className="b-top">
+        <span className="b-title"><b className="b-num">{r.number}</b>{catName && <span className="b-cat">- {catName}</span>}</span>
+        <span className="b-st">{STATUS[r.status].label}</span>
+      </div>
       {timer && <div className="b-timer">{timer}</div>}
       {o && <div className="b-meta">{VEHICLES[o.vehicle_type].split(' ')[0]} {o.plate || ''}{o.promotion_name ? ` · 🏷️ ${o.promotion_name}` : ''}</div>}
       {sub && <div className="b-sub">{sub}</div>}
@@ -2355,6 +2359,8 @@ table.click tbody tr{cursor:pointer} table.click tbody tr:hover{background:var(-
 @keyframes pulse{50%{box-shadow:0 0 0 4px #ef444466}}
 .b-top{display:flex;justify-content:space-between;align-items:center;gap:6px}
 .b-num{font-size:1.35rem}
+.b-title{display:flex;align-items:baseline;gap:6px;min-width:0}
+.b-cat{font-size:.8rem;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b-st{font-size:.7rem;font-weight:700;color:var(--c);text-transform:uppercase;letter-spacing:.04em}
 .b-timer{font-variant-numeric:tabular-nums;font-weight:700;font-size:1.05rem}
 .b-meta,.b-sub{font-size:.78rem}
