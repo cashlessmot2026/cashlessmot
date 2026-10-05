@@ -4,6 +4,7 @@ import { Html5Qrcode } from 'html5-qrcode'
 import QRCode from 'qrcode'
 import { Capacitor } from '@capacitor/core'
 import { CapacitorNfc } from '@capgo/capacitor-nfc'
+import { LocalNotifications } from '@capacitor/local-notifications'
 
 /* =====================================================================
    CONFIGURACIÓN SUPABASE (anon key pública; las contraseñas viven en la BD)
@@ -192,6 +193,68 @@ async function printRoomCards(rooms) {
   w.document.close()
 }
 
+/* --- Alertas de tiempo de habitación (5 min antes y al cumplirse) --- */
+const alertTimes = o => { const st = new Date(o.start_at).getTime(); const end = st + Number(o.hours_included || 0) * 3600000; return { warn: end - 5 * 60000, end } }
+const notifId = (id, stage) => { let h = 0; for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) | 0; return (Math.abs(h) % 100000000) * 10 + stage }
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)()
+    ;[0, 0.35].forEach(t => {
+      const o = ctx.createOscillator(), g = ctx.createGain()
+      o.frequency.value = 880; o.connect(g); g.connect(ctx.destination)
+      g.gain.setValueAtTime(0.25, ctx.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.3)
+      o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.3)
+    })
+  } catch {}
+}
+function useRoomAlerts(d, enabled) {
+  // APK: notificaciones programadas en el teléfono (suenan aunque la app esté cerrada)
+  const sig = enabled ? d.occ.map(o => `${o.id}|${o.start_at}|${o.hours_included}|${o.room_number}`).sort().join(',') : ''
+  useEffect(() => {
+    if (!enabled || !IS_NATIVE) return
+    ;(async () => {
+      try {
+        let perm = await LocalNotifications.checkPermissions()
+        if (perm.display !== 'granted') perm = await LocalNotifications.requestPermissions()
+        if (perm.display !== 'granted') return
+        const pend = await LocalNotifications.getPending()
+        if (pend.notifications.length) await LocalNotifications.cancel({ notifications: pend.notifications.map(n => ({ id: n.id })) })
+        const now = Date.now(), list = []
+        for (const o of d.occ) {
+          const { warn, end } = alertTimes(o)
+          if (warn > now) list.push({ id: notifId(o.id, 1), title: `⏰ Habitación ${o.room_number}: faltan 5 minutos`, body: `El tiempo de uso termina a las ${hhmm(end)}`, schedule: { at: new Date(warn), allowWhileIdle: true } })
+          if (end > now) list.push({ id: notifId(o.id, 2), title: `🔴 Habitación ${o.room_number}: tiempo cumplido`, body: 'Terminó el tiempo incluido; desde ahora corre la hora extra.', schedule: { at: new Date(end), allowWhileIdle: true } })
+        }
+        if (list.length) await LocalNotifications.schedule({ notifications: list })
+      } catch (e) { console.warn('Notificaciones', e) }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, enabled])
+  // Dentro de la app (web y APK abierto): aviso + sonido + notificación del navegador
+  useEffect(() => {
+    if (!enabled) return
+    const check = () => {
+      const now = Date.now(), seen = store.get('motel_alerts', {})
+      let changed = false
+      for (const o of d.occ) {
+        const { warn, end } = alertTimes(o)
+        for (const [stage, t, msg] of [[1, warn, `⏰ Habitación ${o.room_number}: faltan 5 minutos`], [2, end, `🔴 Habitación ${o.room_number}: se cumplió el tiempo`]]) {
+          const k = o.id + ':' + stage
+          if (now >= t && now - t < 30 * 60000 && !seen[k]) {
+            seen[k] = now; changed = true
+            toast(msg, 'warn'); beep()
+            if (!IS_NATIVE && 'Notification' in window && Notification.permission === 'granted') { try { new Notification(msg, { body: 'Motel Control', tag: k }) } catch {} }
+          }
+        }
+      }
+      if (changed) { for (const k in seen) if (now - seen[k] > 86400000) delete seen[k]; store.set('motel_alerts', seen) }
+    }
+    check()
+    const i = setInterval(check, 15000)
+    return () => clearInterval(i)
+  }, [d.occ, enabled])
+}
+
 const norm = s => String(s || '').trim().toUpperCase()
 const pickCode = (room, cands) => { const keys = [room.qr_code, room.nfc_tag].filter(Boolean).map(norm); return cands.find(c => keys.includes(norm(c))) || cands[0] }
 const codeMatches = (room, code) => [room.qr_code, room.nfc_tag].filter(Boolean).map(norm).includes(norm(code))
@@ -305,7 +368,7 @@ function Login({ onLogin }) {
 }
 
 /* ---------------- SHELL ---------------- */
-const TABS_ADMIN = [['recepcion', '🛎️ Recepción'], ['habitaciones', '🛏️ Habitaciones'], ['promociones', '🏷️ Promociones'],['inventario', '🍺 Inventario venta'], ['negocio', '🧴 Inventario negocio'], ['facturas', '🧾 Facturas'], ['chat', '💬 Chat']]
+const TABS_ADMIN = [['recepcion', '🛎️ Recepción'], ['habitaciones', '🛏️ Habitaciones'], ['caja', '💰 Caja'], ['promociones', '🏷️ Promociones'], ['inventario', '🍺 Inventario venta'], ['negocio', '🧴 Inventario negocio'], ['facturas', '🧾 Facturas'], ['chat', '💬 Chat']]
 const TABS_SUPER = [['stats', '📊 Estadísticas'], ['historial', '📅 Historial'], ...TABS_ADMIN, ['pagos', '💳 Pagos'], ['limpiezas', '🧹 Limpiezas'], ['ajustes', '⚙️ Ajustes']]
 
 function Shell({ user, onLogout }) {
@@ -327,6 +390,10 @@ function Shell({ user, onLogout }) {
   useEffect(() => {
     if (tab === 'chat' && d.messages[0]) { setSeen(d.messages[0].created_at); store.set(seenKey, d.messages[0].created_at) }
   }, [tab, d.messages, seenKey])
+  useRoomAlerts(d, user.role === 'admin')
+  const [cashModal, setCashModal] = useState(null) // 'gasto' | 'cierre'
+  const [notifPerm, setNotifPerm] = useState(() => (!IS_NATIVE && 'Notification' in window ? Notification.permission : 'granted'))
+  const askNotif = async () => { try { setNotifPerm(await Notification.requestPermission()) } catch {} }
   const unread = d.messages.filter(m => m.sender_role !== user.role && m.created_at > seen).length
   const pendingAudits = d.audits.filter(a => (isSuper ? a.status === 'respondida' : a.status === 'pendiente')).length
   const lowStock = d.products.filter(p => p.active && p.stock <= p.min_stock).length
@@ -340,7 +407,12 @@ function Shell({ user, onLogout }) {
         <div className="chips hide-sm">
           {Object.entries(STATUS).map(([k, s]) => <span key={k} className="chip" style={{ '--c': s.color }}><i />{s.label}: <b>{counts[k]}</b></span>)}
         </div>
-        <div className="row gap"><Clock /><button className="btn ghost sm" onClick={onLogout}>Salir</button></div>
+        <div className="row gap wrap top-actions">
+          <button className="btn sm" onClick={() => setCashModal('gasto')}>💸 Gasto</button>
+          <button className="btn sm primary" onClick={() => setCashModal('cierre')}>🧾 Cierre de caja</button>
+          {user.role === 'admin' && notifPerm === 'default' && <button className="btn sm ghost" onClick={askNotif}>🔔 Activar alertas</button>}
+          <Clock /><button className="btn ghost sm" onClick={onLogout}>Salir</button>
+        </div>
       </header>
       <nav className="tabs">
         {tabs.map(([k, l]) => (
@@ -355,6 +427,7 @@ function Shell({ user, onLogout }) {
         {!d.loaded ? <div className="loading">Cargando…</div> : <>
           {tab === 'recepcion' && <Reception {...props} />}
           {tab === 'habitaciones' && <RoomsTab {...props} />}
+          {tab === 'caja' && <CashTab {...props} onExpense={() => setCashModal('gasto')} onClose={() => setCashModal('cierre')} />}
           {tab === 'promociones' && <PromotionsTab {...props} />}
           {tab === 'inventario' && <ProductsTab {...props} />}
           {tab === 'negocio' && <BizTab {...props} />}
@@ -367,6 +440,8 @@ function Shell({ user, onLogout }) {
           {tab === 'ajustes' && isSuper && <SettingsTab {...props} />}
         </>}
       </main>
+      {cashModal === 'gasto' && <ExpenseModal user={user} reload={reload} onClose={() => setCashModal(null)} />}
+      {cashModal === 'cierre' && <CloseCashModal d={d} user={user} reload={reload} onClose={() => setCashModal(null)} />}
     </div>
   )
 }
@@ -962,6 +1037,348 @@ function QrModal({ room, onClose }) {
       <CodesPanel room={room} />
       <p className="muted small">Se escanea el QR o el tag NFC para iniciar y terminar la limpieza de esta habitación.</p>
     </Modal>
+  )
+}
+
+/* =====================================================================
+   CAJA (POS): gastos, cuadre y cierre de caja
+   ===================================================================== */
+const EXP_KINDS = { insumo: '🧴 Insumos del negocio', retiro: '💵 Dinero tomado de caja', otro: '📝 Otro gasto' }
+const startOfToday = () => { const x = new Date(); x.setHours(0, 0, 0, 0); return x.toISOString() }
+
+function consolidate({ pays = [], items = [], occ = [], exps = [], base = 0 }) {
+  const byMethod = m => sum(pays.filter(p => p.method === m), p => p.amount)
+  const cash = byMethod('efectivo'), transfer = byMethod('transferencia')
+  const expCash = sum(exps.filter(e => e.method === 'efectivo'), e => e.amount)
+  const expTransfer = sum(exps.filter(e => e.method === 'transferencia'), e => e.amount)
+  return {
+    cash, transfer, income: cash + transfer, payCount: pays.length,
+    productSales: sum(items, i => i.qty * i.unit_price),
+    products: Object.entries(groupBy(items, i => i.product_name)).map(([name, v]) => ({ name, qty: sum(v, i => i.qty), total: sum(v, i => i.qty * i.unit_price) })).sort((a, b) => b.total - a.total),
+    roomSales: sum(occ, o => Number(o.room_price) + Number(o.extra_charge || 0)), roomCount: occ.length,
+    promoCount: occ.filter(o => o.promotion_name).length,
+    expCash, expTransfer, expTotal: expCash + expTransfer,
+    expByKind: Object.fromEntries(Object.keys(EXP_KINDS).map(k => [k, sum(exps.filter(e => e.kind === k), e => e.amount)])),
+    base: Number(base || 0), expected: Number(base || 0) + cash - expCash
+  }
+}
+
+// Turno actual: todo lo ocurrido desde el último cierre de caja
+function useShift(version) {
+  const [s, setS] = useState(null)
+  const load = useCallback(async () => {
+    try {
+      const [last] = await q(supabase.from('cash_closures').select('*').order('closed_at', { ascending: false }).limit(1))
+      const from = last?.closed_at || startOfToday()
+      const [pays, items, occ, exps] = await Promise.all([
+        q(supabase.from('payments').select('*').gt('created_at', from).order('created_at')),
+        q(supabase.from('occupancy_items').select('*').gt('created_at', from)),
+        q(supabase.from('occupancies').select('*').eq('status', 'liquidada').gt('end_at', from)),
+        q(supabase.from('cash_expenses').select('*').is('closure_id', null).order('created_at'))
+      ])
+      const ids = [...new Set(pays.map(p => p.occupancy_id))]
+      const rooms = ids.length ? await q(supabase.from('occupancies').select('id,room_number,plate').in('id', ids.slice(0, 300))) : []
+      setS({ last, from, pays, items, occ, exps, roomOf: Object.fromEntries(rooms.map(r => [r.id, r])), c: consolidate({ pays, items, occ, exps, base: last?.base_left }) })
+    } catch (e) { fail(e) }
+  }, [])
+  useEffect(() => { load() }, [load, version])
+  return [s, load]
+}
+
+function CashSummary({ c, showBase = true }) {
+  return (
+    <div className="stack">
+      <div className="kpis">
+        <Kpi label="💵 Pagos en efectivo" value={money(c.cash)} />
+        <Kpi label="📲 Pagos por transferencia" value={money(c.transfer)} />
+        <Kpi label="Total recibido" value={money(c.income)} sub={`${c.payCount} pagos`} />
+        <Kpi label="🛏️ Ventas habitaciones" value={money(c.roomSales)} sub={`${c.roomCount} liquidadas${c.promoCount ? ` · ${c.promoCount} con promoción` : ''}`} />
+        <Kpi label="🍺 Ventas productos" value={money(c.productSales)} />
+        <Kpi label="💸 Gastos" value={money(c.expTotal)} sub={`efectivo ${money(c.expCash)} · transf. ${money(c.expTransfer)}`} />
+      </div>
+      <div className="cols2 gap">
+        <div className="card inner" style={{ marginTop: 0 }}>
+          <h4>Gastos por tipo</h4>
+          <table><tbody>{Object.entries(EXP_KINDS).map(([k, l]) => <tr key={k}><td>{l}</td><td className="r">{money(c.expByKind[k])}</td></tr>)}</tbody></table>
+        </div>
+        <div className="card inner" style={{ marginTop: 0 }}>
+          <h4>Productos vendidos</h4>
+          {c.products.length ? <table><tbody>{c.products.map(p => <tr key={p.name}><td>{p.name}</td><td className="r">{p.qty}</td><td className="r">{money(p.total)}</td></tr>)}</tbody></table> : <p className="muted">Sin ventas</p>}
+        </div>
+      </div>
+      {showBase && (
+        <div className="cash-calc">
+          <div><span>Base recibida del cierre anterior</span><b>{money(c.base)}</b></div>
+          <div><span>+ Efectivo recibido</span><b>{money(c.cash)}</b></div>
+          <div><span>− Gastos pagados en efectivo</span><b>{money(c.expCash)}</b></div>
+          <div className="tot"><span>= Efectivo esperado en caja</span><b>{money(c.expected)}</b></div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ExpenseModal({ user, reload, onClose }) {
+  const [f, setF] = useState({ kind: 'insumo', description: '', amount: '', method: 'efectivo', reason: '' })
+  const [photo, setPhoto] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    if (!f.description.trim()) return toast('Describe el gasto', 'err')
+    if (!(Number(f.amount) > 0)) return toast('Ingresa el valor', 'err')
+    if (!photo && !f.reason.trim()) return toast('Adjunta la factura/recibo o escribe el motivo', 'err')
+    setBusy(true)
+    try {
+      const url = photo ? await uploadImage(photo, 'gastos') : null
+      await q(supabase.from('cash_expenses').insert({ ...f, description: f.description.trim(), reason: f.reason.trim() || null, amount: Number(f.amount), receipt_url: url, created_by: user.username, created_role: user.role }))
+      toast(`💸 Gasto registrado: ${money(f.amount)}`); reload(); onClose()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+  return (
+    <Modal title="💸 Registrar gasto" onClose={onClose}>
+      <div className="seg">{Object.entries(EXP_KINDS).map(([k, l]) => <button key={k} type="button" className={f.kind === k ? 'on' : ''} onClick={() => setF({ ...f, kind: k })}>{l}</button>)}</div>
+      <div className="form cols2 mt">
+        <label>Descripción<input value={f.description} onChange={e => setF({ ...f, description: e.target.value })} placeholder={f.kind === 'insumo' ? 'Ej: Detergente, cloro, papel' : f.kind === 'retiro' ? 'Ej: Retiro para cambio / adelanto' : 'Ej: Domicilio, reparación'} /></label>
+        <label>Valor<input type="number" min="0" value={f.amount} onChange={e => setF({ ...f, amount: e.target.value })} /></label>
+        <label>Pagado con<select value={f.method} onChange={e => setF({ ...f, method: e.target.value })}>{Object.entries(METHODS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
+        <label>Motivo / soporte{!photo && ' (obligatorio sin foto)'}<input value={f.reason} onChange={e => setF({ ...f, reason: e.target.value })} placeholder="¿Por qué / quién lo autorizó?" /></label>
+      </div>
+      <PhotoInput file={photo} setFile={setPhoto} label="📷 Foto de la factura o recibo" />
+      <p className="muted small">{f.method === 'efectivo' ? 'Se descuenta del efectivo esperado en caja.' : 'Pagado por transferencia: no afecta el efectivo de la caja.'}</p>
+      <button className="btn primary mt" disabled={busy} onClick={save}>{busy ? 'Guardando…' : 'Registrar gasto'}</button>
+    </Modal>
+  )
+}
+
+function printClosure(cl) {
+  const s = cl.summary || {}
+  const row = (a, b) => `<tr><td>${a}</td><td style="text-align:right">${b}</td></tr>`
+  const w = window.open('', '_blank')
+  if (!w) return toast('Permite las ventanas emergentes para imprimir', 'err')
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Cierre de caja</title><style>
+    body{font-family:monospace;width:76mm;margin:0 auto;padding:4mm;font-size:11px}h2,h3{text-align:center;margin:4px 0}
+    table{width:100%;border-collapse:collapse}td{padding:2px 0}hr{border:0;border-top:1px dashed #000}.t td{font-weight:bold;font-size:12px}
+  </style></head><body>
+  <h2>MOTEL CONTROL</h2><h3>CIERRE DE CAJA</h3>
+  <p>Desde: ${dt(cl.opened_at)}<br>Hasta: ${dt(cl.closed_at)}<br>Cerró: ${cl.closed_by} (${cl.closed_role})</p><hr>
+  <table>${row('Base recibida', money(cl.opening_base))}${row('Pagos efectivo', money(cl.cash_payments))}${row('Pagos transferencia', money(cl.transfer_payments))}
+  ${row('Ventas habitaciones', money(cl.room_sales))}${row('Ventas productos', money(cl.product_sales))}</table><hr>
+  <table>${Object.entries(EXP_KINDS).map(([k, l]) => row(l.replace(/^\S+\s/, ''), money(s.expByKind?.[k]))).join('')}${row('Gastos efectivo', money(cl.expenses_cash))}${row('Gastos transferencia', money(cl.expenses_transfer))}</table><hr>
+  <table>${row('Efectivo esperado', money(cl.expected_cash))}${row('Efectivo contado', money(cl.counted_cash))}<tr class="t"><td>Diferencia</td><td style="text-align:right">${money(cl.difference)}</td></tr>
+  ${row('Base que queda', money(cl.base_left))}<tr class="t"><td>EFECTIVO ENTREGADO</td><td style="text-align:right">${money(cl.cash_delivered)}</td></tr></table><hr>
+  ${(s.products || []).length ? `<table>${s.products.map(p => row(`${p.qty} x ${p.name}`, money(p.total))).join('')}</table><hr>` : ''}
+  ${cl.notes ? `<p>Notas: ${cl.notes}</p>` : ''}<br><br><p>Firma: ______________________</p>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`)
+  w.document.close()
+}
+
+function CloseCashModal({ d, user, reload, onClose }) {
+  const [s] = useShift(d.version)
+  const [counted, setCounted] = useState('')
+  const [base, setBase] = useState(null)
+  const [notes, setNotes] = useState('')
+  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(null)
+  if (done) return (
+    <Modal title="✅ Caja cerrada" onClose={onClose}>
+      <div className="cash-calc">
+        <div><span>Efectivo contado</span><b>{money(done.counted_cash)}</b></div>
+        <div><span>Diferencia</span><b className={done.difference < 0 ? 'bad-t' : 'ok-t'}>{money(done.difference)}</b></div>
+        <div><span>Base que queda en caja</span><b>{money(done.base_left)}</b></div>
+        <div className="tot"><span>Efectivo entregado</span><b>{money(done.cash_delivered)}</b></div>
+      </div>
+      <div className="row gap mt"><button className="btn primary" onClick={() => printClosure(done)}>🖨️ Imprimir cierre</button><button className="btn ghost" onClick={onClose}>Cerrar</button></div>
+    </Modal>
+  )
+  if (!s) return <Modal title="🧾 Cuadre y cierre de caja" onClose={onClose}><div className="loading">Calculando…</div></Modal>
+  const c = s.c
+  const baseLeft = base ?? c.base
+  const cnt = Number(counted || 0)
+  const diff = cnt - c.expected
+  const delivered = cnt - Number(baseLeft || 0)
+  const close = async () => {
+    if (counted === '') return toast('Ingresa el efectivo contado en caja', 'err')
+    if (Number(baseLeft) > cnt) return toast('La base no puede ser mayor al efectivo contado', 'err')
+    setBusy(true)
+    try {
+      const row = {
+        opened_at: s.from, closed_at: new Date().toISOString(), opening_base: c.base,
+        cash_payments: c.cash, transfer_payments: c.transfer, room_sales: c.roomSales, product_sales: c.productSales,
+        expenses_cash: c.expCash, expenses_transfer: c.expTransfer, expected_cash: c.expected, counted_cash: cnt,
+        difference: diff, base_left: Number(baseLeft || 0), cash_delivered: delivered, notes: notes || null,
+        closed_by: user.username, closed_role: user.role,
+        summary: { products: c.products, expByKind: c.expByKind, payCount: c.payCount, roomCount: c.roomCount, promoCount: c.promoCount, expenseIds: s.exps.map(e => e.id) }
+      }
+      const [cl] = await q(supabase.from('cash_closures').insert(row).select())
+      if (s.exps.length) await q(supabase.from('cash_expenses').update({ closure_id: cl.id }).in('id', s.exps.map(e => e.id)))
+      toast('🧾 Caja cerrada'); setDone(cl); reload()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+  return (
+    <Modal title="🧾 Cuadre y cierre de caja" onClose={onClose} wide>
+      <p className="muted small">Turno desde <b>{dt(s.from)}</b> {s.last ? `(último cierre por ${s.last.closed_by})` : '(primer cierre del día)'} hasta ahora.</p>
+      <CashSummary c={c} />
+      <div className="form cols3 mt">
+        <label>💵 Efectivo contado en caja<input type="number" min="0" value={counted} onChange={e => setCounted(e.target.value)} placeholder={String(Math.max(0, Math.round(c.expected)))} /></label>
+        <label>Base que se deja en caja<input type="number" min="0" value={baseLeft} onChange={e => setBase(e.target.value)} /></label>
+        <label>Notas<input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Observaciones del cierre" /></label>
+      </div>
+      {counted !== '' && (
+        <div className="cash-calc mt">
+          <div><span>Diferencia (contado − esperado)</span><b className={diff < 0 ? 'bad-t' : diff > 0 ? 'warn-t' : 'ok-t'}>{diff > 0 ? '+' : ''}{money(diff)} {diff === 0 ? '✓ cuadra' : diff < 0 ? 'faltante' : 'sobrante'}</b></div>
+          <div><span>− Base que queda en caja</span><b>{money(baseLeft)}</b></div>
+          <div className="tot"><span>Efectivo a entregar</span><b>{money(delivered)}</b></div>
+          <div><span>Transferencias (no están en caja)</span><b>{money(c.transfer)}</b></div>
+        </div>
+      )}
+      {!confirm
+        ? <button className="btn primary block lg mt" disabled={counted === ''} onClick={() => setConfirm(true)}>Cerrar caja</button>
+        : <div className="confirm mt"><p>¿Confirmas el cierre? Se entregan <b>{money(delivered)}</b> y queda una base de <b>{money(baseLeft)}</b>. El siguiente turno empieza desde ahora.</p>
+          <div className="row gap"><button className="btn danger" disabled={busy} onClick={close}>{busy ? 'Cerrando…' : 'Sí, cerrar caja'}</button><button className="btn ghost" onClick={() => setConfirm(false)}>No</button></div></div>}
+    </Modal>
+  )
+}
+
+function ExpensesTable({ exps, isSuper, onChanged }) {
+  const [view, setView] = useState(null)
+  const remove = async e => { try { await q(supabase.from('cash_expenses').delete().eq('id', e.id)); toast('Gasto eliminado'); onChanged() } catch (err) { fail(err) } }
+  if (!exps.length) return <p className="muted">Sin gastos</p>
+  return (
+    <>
+      <div className="table-wrap"><table>
+        <thead><tr><th>Hora</th><th>Tipo</th><th>Descripción</th><th>Motivo</th><th>Pago</th><th className="r">Valor</th><th>Soporte</th><th>Por</th>{isSuper && <th></th>}</tr></thead>
+        <tbody>{exps.map(e => <tr key={e.id}><td>{dt(e.created_at)}</td><td>{EXP_KINDS[e.kind]}</td><td>{e.description}</td><td className="small">{e.reason}</td><td>{METHODS[e.method]}</td><td className="r">{money(e.amount)}</td>
+          <td>{e.receipt_url ? <img className="thumb" src={e.receipt_url} alt="" onClick={() => setView(e.receipt_url)} /> : <span className="muted small">motivo</span>}</td><td className="small">{e.created_by}</td>
+          {isSuper && <td>{!e.closure_id && <button className="btn sm danger ghost" onClick={() => remove(e)}>✕</button>}</td>}</tr>)}</tbody>
+      </table></div>
+      {view && <Modal title="Soporte del gasto" onClose={() => setView(null)} wide><img src={view} alt="" className="full-img" /></Modal>}
+    </>
+  )
+}
+
+function CashTab({ d, isSuper, onExpense, onClose }) {
+  const [s, load] = useShift(d.version)
+  const [closures, setClosures] = useState([])
+  useEffect(() => { q(supabase.from('cash_closures').select('*').order('closed_at', { ascending: false }).limit(10)).then(setClosures).catch(fail) }, [d.version])
+  return (
+    <div className="stack">
+      <div className="card row between wrap gap">
+        <div><h2 style={{ margin: 0 }}>💰 Caja · turno actual</h2>{s && <span className="muted small">Desde {dt(s.from)} · base recibida {money(s.c.base)}</span>}</div>
+        <div className="row gap"><button className="btn" onClick={onExpense}>💸 Registrar gasto</button><button className="btn primary" onClick={onClose}>🧾 Cuadre y cierre</button></div>
+      </div>
+      {!s ? <div className="loading">Cargando…</div> : <>
+        <div className="card"><CashSummary c={s.c} /></div>
+        <div className="card"><h3>💸 Gastos del turno</h3><ExpensesTable exps={s.exps} isSuper={isSuper} onChanged={load} /></div>
+        <div className="card">
+          <h3>💳 Pagos del turno</h3>
+          {!s.pays.length ? <p className="muted">Sin pagos</p> : <div className="table-wrap"><table>
+            <thead><tr><th>Hora</th><th>Hab.</th><th>Placa</th><th>Concepto</th><th>Método</th><th className="r">Valor</th></tr></thead>
+            <tbody>{[...s.pays].reverse().map(p => <tr key={p.id}><td>{hhmm(p.created_at)}</td><td>{s.roomOf[p.occupancy_id]?.room_number}</td><td>{s.roomOf[p.occupancy_id]?.plate}</td><td>{p.concept}</td><td>{METHODS[p.method]}</td><td className="r">{money(p.amount)}</td></tr>)}</tbody>
+          </table></div>}
+        </div>
+      </>}
+      <div className="card">
+        <h3>🧾 Últimos cierres</h3>
+        <ClosuresTable list={closures} />
+      </div>
+      {isSuper && <DailyCash d={d} />}
+    </div>
+  )
+}
+
+function ClosuresTable({ list }) {
+  const [open, setOpen] = useState(null)
+  if (!list.length) return <p className="muted">Aún no hay cierres</p>
+  return (
+    <>
+      <div className="table-wrap"><table className="click">
+        <thead><tr><th>Cierre</th><th>Turno</th><th>Por</th><th className="r">Efectivo</th><th className="r">Transf.</th><th className="r">Gastos</th><th className="r">Esperado</th><th className="r">Contado</th><th className="r">Dif.</th><th className="r">Base</th><th className="r">Entregado</th></tr></thead>
+        <tbody>{list.map(c => <tr key={c.id} onClick={() => setOpen(c)}><td>{dt(c.closed_at)}</td><td className="small">{hhmm(c.opened_at)}–{hhmm(c.closed_at)}</td><td>{c.closed_by}</td>
+          <td className="r">{money(c.cash_payments)}</td><td className="r">{money(c.transfer_payments)}</td><td className="r">{money(Number(c.expenses_cash) + Number(c.expenses_transfer))}</td>
+          <td className="r">{money(c.expected_cash)}</td><td className="r">{money(c.counted_cash)}</td><td className={'r ' + (c.difference < 0 ? 'bad-t' : c.difference > 0 ? 'warn-t' : 'ok-t')}>{money(c.difference)}</td>
+          <td className="r">{money(c.base_left)}</td><td className="r"><b>{money(c.cash_delivered)}</b></td></tr>)}</tbody>
+      </table></div>
+      {open && <ClosureDetail cl={open} onClose={() => setOpen(null)} />}
+    </>
+  )
+}
+
+function ClosureDetail({ cl, onClose }) {
+  const [exps, setExps] = useState([])
+  useEffect(() => { q(supabase.from('cash_expenses').select('*').eq('closure_id', cl.id).order('created_at')).then(setExps).catch(fail) }, [cl.id])
+  const s = cl.summary || {}
+  const c = { cash: Number(cl.cash_payments), transfer: Number(cl.transfer_payments), income: Number(cl.cash_payments) + Number(cl.transfer_payments), payCount: s.payCount || 0,
+    productSales: Number(cl.product_sales), products: s.products || [], roomSales: Number(cl.room_sales), roomCount: s.roomCount || 0, promoCount: s.promoCount || 0,
+    expCash: Number(cl.expenses_cash), expTransfer: Number(cl.expenses_transfer), expTotal: Number(cl.expenses_cash) + Number(cl.expenses_transfer), expByKind: s.expByKind || {},
+    base: Number(cl.opening_base), expected: Number(cl.expected_cash) }
+  return (
+    <Modal title={`Cierre de caja · ${dt(cl.closed_at)}`} onClose={onClose} wide>
+      <p className="muted small">Turno {dt(cl.opened_at)} → {dt(cl.closed_at)} · cerró {cl.closed_by} ({cl.closed_role}){cl.notes ? ` · ${cl.notes}` : ''}</p>
+      <CashSummary c={c} />
+      <div className="cash-calc mt">
+        <div><span>Efectivo contado</span><b>{money(cl.counted_cash)}</b></div>
+        <div><span>Diferencia</span><b className={cl.difference < 0 ? 'bad-t' : 'ok-t'}>{money(cl.difference)}</b></div>
+        <div><span>Base que quedó</span><b>{money(cl.base_left)}</b></div>
+        <div className="tot"><span>Efectivo entregado</span><b>{money(cl.cash_delivered)}</b></div>
+      </div>
+      <h4 className="mt">Gastos del turno</h4>
+      <ExpensesTable exps={exps} isSuper={false} onChanged={() => {}} />
+      <button className="btn primary mt" onClick={() => printClosure(cl)}>🖨️ Imprimir</button>
+    </Modal>
+  )
+}
+
+// Superadmin: consolidado diario de caja con todas las transacciones
+function DailyCash({ d }) {
+  const [day, setDay] = useState(today())
+  const [data, setData] = useState(null)
+  const load = useCallback(async () => {
+    try {
+      const [F, T] = dayBounds(day)
+      const [pays, items, occ, exps, closures] = await Promise.all([
+        fetchRange('payments', 'created_at', F, T), fetchRange('occupancy_items', 'created_at', F, T),
+        q(supabase.from('occupancies').select('*').eq('status', 'liquidada').gte('end_at', F).lt('end_at', T)),
+        fetchRange('cash_expenses', 'created_at', F, T), fetchRange('cash_closures', 'closed_at', F, T)
+      ])
+      const ids = [...new Set(pays.map(p => p.occupancy_id))]
+      const rooms = ids.length ? await q(supabase.from('occupancies').select('id,room_number,plate').in('id', ids.slice(0, 300))) : []
+      setData({ pays, exps, closures, roomOf: Object.fromEntries(rooms.map(r => [r.id, r])), c: consolidate({ pays, items, occ, exps }) })
+    } catch (e) { fail(e) }
+  }, [day])
+  useEffect(() => { load() }, [load, d.version])
+  const shift = n => { const x = new Date(day + 'T12:00:00'); x.setDate(x.getDate() + n); setDay(dayKey(x)) }
+  const tx = data ? [
+    ...data.pays.map(p => ({ id: p.id, at: p.created_at, type: 'Pago', detail: `Hab. ${data.roomOf[p.occupancy_id]?.room_number || '?'} · ${p.concept || ''}`, method: p.method, amount: Number(p.amount) })),
+    ...data.exps.map(e => ({ id: e.id, at: e.created_at, type: EXP_KINDS[e.kind], detail: `${e.description}${e.reason ? ' · ' + e.reason : ''} (${e.created_by})`, method: e.method, amount: -Number(e.amount) }))
+  ].sort((a, b) => b.at.localeCompare(a.at)) : []
+  return (
+    <div className="stack">
+      <div className="card row between wrap gap">
+        <h2 style={{ margin: 0 }}>📊 Consolidado diario de caja</h2>
+        <div className="row gap"><button className="btn sm" onClick={() => shift(-1)}>◀</button><input type="date" value={day} onChange={e => setDay(e.target.value)} /><button className="btn sm" onClick={() => shift(1)}>▶</button></div>
+      </div>
+      {!data ? <div className="loading">Cargando…</div> : <>
+        <div className="card">
+          <CashSummary c={data.c} showBase={false} />
+          <div className="cash-calc mt">
+            <div><span>Total recibido</span><b>{money(data.c.income)}</b></div>
+            <div><span>− Total gastos</span><b>{money(data.c.expTotal)}</b></div>
+            <div className="tot"><span>Neto del día</span><b>{money(data.c.income - data.c.expTotal)}</b></div>
+            <div><span>Efectivo entregado en cierres</span><b>{money(sum(data.closures, c => c.cash_delivered))}</b></div>
+            <div><span>Diferencias de caja</span><b className={sum(data.closures, c => c.difference) < 0 ? 'bad-t' : 'ok-t'}>{money(sum(data.closures, c => c.difference))}</b></div>
+          </div>
+        </div>
+        <div className="card"><h3>🧾 Cierres del día</h3><ClosuresTable list={data.closures} /></div>
+        <div className="card"><h3>💸 Gastos del día</h3><ExpensesTable exps={data.exps} isSuper onChanged={load} /></div>
+        <div className="card">
+          <h3>🔁 Todas las transacciones</h3>
+          {!tx.length ? <p className="muted">Sin transacciones</p> : <div className="table-wrap"><table>
+            <thead><tr><th>Hora</th><th>Tipo</th><th>Detalle</th><th>Método</th><th className="r">Valor</th></tr></thead>
+            <tbody>{tx.map(t => <tr key={t.id}><td>{hhmm(t.at)}</td><td>{t.type}</td><td className="small">{t.detail}</td><td>{METHODS[t.method]}</td><td className={'r ' + (t.amount < 0 ? 'bad-t' : 'ok-t')}>{t.amount < 0 ? '−' : '+'}{money(Math.abs(t.amount))}</td></tr>)}</tbody>
+          </table></div>}
+        </div>
+      </>}
+    </div>
   )
 }
 
@@ -1800,13 +2217,13 @@ table.click tbody tr{cursor:pointer} table.click tbody tr:hover{background:var(-
 .login{width:min(400px,100%);display:flex;flex-direction:column;gap:14px;text-align:center}
 .logo{font-size:1.6rem}.logo.big{font-size:3rem}
 .shell{min-height:100vh;display:flex;flex-direction:column}
-.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px;padding-top:max(10px,env(safe-area-inset-top));background:#0b1020e6;backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.top{position:relative;z-index:20;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px;padding-top:max(10px,env(safe-area-inset-top));background:#0b1020e6;backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
 .chip{display:inline-flex;align-items:center;gap:6px;font-size:.8rem;background:var(--panel2);border:1px solid var(--line);padding:5px 10px;border-radius:99px}
 .chip i{width:8px;height:8px;border-radius:50%;background:var(--c)}
 .clock{font-variant-numeric:tabular-nums;font-weight:700;color:var(--brand2)}
-.tabs{display:flex;gap:6px;overflow-x:auto;padding:10px 18px;border-bottom:1px solid var(--line);scrollbar-width:none;position:sticky;top:57px;z-index:19;background:#0b1020e6;backdrop-filter:blur(12px)}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding:10px 18px;border-bottom:1px solid var(--line);scrollbar-width:none;position:sticky;top:0;z-index:19;background:#0b1020e6;backdrop-filter:blur(12px)}
 .tabs::-webkit-scrollbar{display:none}
 .tabs button{position:relative;white-space:nowrap;background:transparent;border:1px solid transparent;color:var(--muted);padding:8px 14px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer}
 .tabs button.on{background:var(--panel2);border-color:var(--line);color:var(--text)}
@@ -1914,11 +2331,17 @@ details.card summary{cursor:pointer}
 .toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:100;width:min(440px,92vw)}
 .toast{padding:12px 16px;border-radius:12px;background:#14532d;border:1px solid #22c55e88;box-shadow:0 10px 30px #0008;animation:pop .2s;font-weight:600}
 .toast.err{background:#4c1414;border-color:#ef444488}
+.toast.warn{background:#4a3410;border-color:#f59e0b99}
+.warn-t{color:#fcd34d}
+.cash-calc{background:#0a0f1e;border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.cash-calc div{display:flex;justify-content:space-between;gap:10px}
+.cash-calc .tot{border-top:1px solid var(--line);padding-top:8px;font-size:1.1rem}
+.top-actions{justify-content:flex-end}
 @media (max-width:1100px){.recep{grid-template-columns:1fr}.side{position:static}.cols5{grid-template-columns:repeat(3,1fr)}}
 @media (max-width:760px){
   .main{padding:12px}.card{padding:14px}
   .cols2,.cols3,.cols4,.cols5{grid-template-columns:1fr 1fr}
-  .hide-sm{display:none}.tabs{top:55px;padding:8px 12px}
+  .hide-sm{display:none}.tabs{padding:8px 12px}
   .grid{grid-template-columns:repeat(auto-fill,minmax(128px,1fr))}
   .bar-row{grid-template-columns:90px 1fr auto}.checks{grid-template-columns:1fr}
 }
