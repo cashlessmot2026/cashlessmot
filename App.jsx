@@ -826,7 +826,7 @@ function OccupancyPanel({ o, d, user, reload, onClose }) {
   const run = async (fn, ok) => { setBusy(true); try { await fn(); ok && toast(ok); await reload() } catch (e) { fail(e) } finally { setBusy(false) } }
 
   const addItems = () => run(async () => { await rpc('add_items', { p_occupancy_id: o.id, p_items: cartList(cart), p_user: user.username }); setCart({}); setAdding(false) }, 'Productos agregados')
-  const pay = () => run(async () => { await rpc('add_payment', { p_occupancy_id: o.id, p_amount: Number(abono || acc.balance), p_method: method, p_concept: 'Abono' }); setAbono('') }, 'Pago registrado')
+  const pay = () => run(async () => { await rpc('add_payment', { p_occupancy_id: o.id, p_amount: Number(abono || acc.balance), p_method: method, p_concept: 'Abono', p_user: user.username }); setAbono('') }, 'Pago registrado')
   const liquidate = () => run(async () => {
     const total = await rpc('liquidate_occupancy', { p_occupancy_id: o.id, p_method: method, p_user: user.username })
     toast(`Habitación liquidada · Total ${money(total)} · pasa a limpieza`); onClose()
@@ -1196,6 +1196,11 @@ function consolidate({ pays = [], items = [], occ = [], exps = [], base = 0 }) {
   const expTransfer = sum(exps.filter(e => e.method === 'transferencia'), e => e.amount)
   return {
     cash, transfer, income: cash + transfer, payCount: pays.length,
+    // Sumas por quien registró el pago (admin / superadmin); los pagos antiguos sin usuario van en "sin registro"
+    byUser: Object.entries(groupBy(pays, p => p.created_by || 'sin registro')).map(([user, v]) => ({
+      user, count: v.length,
+      cash: sum(v.filter(p => p.method === 'efectivo'), p => p.amount), transfer: sum(v.filter(p => p.method === 'transferencia'), p => p.amount)
+    })).sort((a, b) => a.user.localeCompare(b.user)),
     productSales: sum(items, i => i.qty * i.unit_price),
     products: Object.entries(groupBy(items, i => i.product_name)).map(([name, v]) => ({ name, qty: sum(v, i => i.qty), total: sum(v, i => i.qty * i.unit_price) })).sort((a, b) => b.total - a.total),
     roomSales: sum(occ, o => Number(o.room_price) + Number(o.extra_charge || 0)), roomCount: occ.length,
@@ -1239,6 +1244,16 @@ function CashSummary({ c, showBase = true }) {
         <Kpi label="🍺 Ventas productos" value={money(c.productSales)} />
         <Kpi label="💸 Gastos" value={money(c.expTotal)} sub={`efectivo ${money(c.expCash)} · transf. ${money(c.expTransfer)}`} />
       </div>
+      {!!c.byUser?.length && (
+        <div className="card inner" style={{ marginTop: 0 }}>
+          <h4>Cobros por usuario</h4>
+          <div className="table-wrap"><table>
+            <thead><tr><th>Usuario</th><th className="r">Pagos</th><th className="r">💵 Efectivo</th><th className="r">📲 Transferencia</th><th className="r">Total</th></tr></thead>
+            <tbody>{c.byUser.map(u => <tr key={u.user}><td>{u.user === 'superadmin' ? '👑' : u.user === 'admin' ? '👤' : '•'} {u.user}</td><td className="r">{u.count}</td><td className="r">{money(u.cash)}</td><td className="r">{money(u.transfer)}</td><td className="r"><b>{money(u.cash + u.transfer)}</b></td></tr>)}</tbody>
+            <tfoot><tr><td>Total</td><td className="r">{c.payCount}</td><td className="r">{money(c.cash)}</td><td className="r">{money(c.transfer)}</td><td className="r"><b>{money(c.income)}</b></td></tr></tfoot>
+          </table></div>
+        </div>
+      )}
       <div className="cols2 gap">
         <div className="card inner" style={{ marginTop: 0 }}>
           <h4>Gastos por tipo</h4>
@@ -1305,6 +1320,7 @@ function printClosure(cl) {
   <p>Desde: ${dt(cl.opened_at)}<br>Hasta: ${dt(cl.closed_at)}<br>Cerró: ${cl.closed_by} (${cl.closed_role})</p><hr>
   <table>${row('Base recibida', money(cl.opening_base))}${row('Pagos efectivo', money(cl.cash_payments))}${row('Pagos transferencia', money(cl.transfer_payments))}
   ${row('Ventas habitaciones', money(cl.room_sales))}${row('Ventas productos', money(cl.product_sales))}</table><hr>
+  ${(s.byUser || []).length ? `<table>${s.byUser.map(u => row(`${u.user} efec.`, money(u.cash)) + row(`${u.user} transf.`, money(u.transfer))).join('')}</table><hr>` : ''}
   <table>${Object.entries(EXP_KINDS).map(([k, l]) => row(l.replace(/^\S+\s/, ''), money(s.expByKind?.[k]))).join('')}${row('Gastos efectivo', money(cl.expenses_cash))}${row('Gastos transferencia', money(cl.expenses_transfer))}</table><hr>
   <table>${row('Efectivo esperado', money(cl.expected_cash))}${row('Efectivo contado', money(cl.counted_cash))}<tr class="t"><td>Diferencia</td><td style="text-align:right">${money(cl.difference)}</td></tr>
   ${row('Base que queda', money(cl.base_left))}<tr class="t"><td>EFECTIVO ENTREGADO</td><td style="text-align:right">${money(cl.cash_delivered)}</td></tr></table><hr>
@@ -1345,12 +1361,13 @@ function CloseCashModal({ d, user, reload, onClose }) {
     setBusy(true)
     try {
       const row = {
-        opened_at: s.from, closed_at: new Date().toISOString(), opening_base: c.base,
+        // closed_at lo pone la base de datos (hora del servidor, igual que los pagos): evita que un reloj del celular desfasado deje pagos fuera del turno
+        opened_at: s.from, opening_base: c.base,
         cash_payments: c.cash, transfer_payments: c.transfer, room_sales: c.roomSales, product_sales: c.productSales,
         expenses_cash: c.expCash, expenses_transfer: c.expTransfer, expected_cash: c.expected, counted_cash: cnt,
         difference: diff, base_left: Number(baseLeft || 0), cash_delivered: delivered, notes: notes || null,
         closed_by: user.username, closed_role: user.role,
-        summary: { products: c.products, expByKind: c.expByKind, payCount: c.payCount, roomCount: c.roomCount, promoCount: c.promoCount, expenseIds: s.exps.map(e => e.id) }
+        summary: { products: c.products, byUser: c.byUser, expByKind: c.expByKind, payCount: c.payCount, roomCount: c.roomCount, promoCount: c.promoCount, expenseIds: s.exps.map(e => e.id) }
       }
       const [cl] = await q(supabase.from('cash_closures').insert(row).select())
       if (s.exps.length) await q(supabase.from('cash_expenses').update({ closure_id: cl.id }).in('id', s.exps.map(e => e.id)))
@@ -1415,8 +1432,8 @@ function CashTab({ d, isSuper, onExpense, onClose }) {
         <div className="card">
           <h3>💳 Pagos del turno</h3>
           {!s.pays.length ? <p className="muted">Sin pagos</p> : <div className="table-wrap"><table>
-            <thead><tr><th>Hora</th><th>Hab.</th><th>Placa</th><th>Concepto</th><th>Método</th><th className="r">Valor</th></tr></thead>
-            <tbody>{[...s.pays].reverse().map(p => <tr key={p.id}><td>{hhmm(p.created_at)}</td><td>{s.roomOf[p.occupancy_id]?.room_number}</td><td>{s.roomOf[p.occupancy_id]?.plate}</td><td>{p.concept}</td><td>{METHODS[p.method]}</td><td className="r">{money(p.amount)}</td></tr>)}</tbody>
+            <thead><tr><th>Hora</th><th>Hab.</th><th>Placa</th><th>Concepto</th><th>Método</th><th>Por</th><th className="r">Valor</th></tr></thead>
+            <tbody>{[...s.pays].reverse().map(p => <tr key={p.id}><td>{hhmm(p.created_at)}</td><td>{s.roomOf[p.occupancy_id]?.room_number}</td><td>{s.roomOf[p.occupancy_id]?.plate}</td><td>{p.concept}</td><td>{METHODS[p.method]}</td><td className="small">{p.created_by || '—'}</td><td className="r">{money(p.amount)}</td></tr>)}</tbody>
           </table></div>}
         </div>
       </>}
@@ -1491,7 +1508,7 @@ function DailyCash({ d }) {
   useEffect(() => { load() }, [load, d.version])
   const shift = n => { const x = new Date(day + 'T12:00:00'); x.setDate(x.getDate() + n); setDay(dayKey(x)) }
   const tx = data ? [
-    ...data.pays.map(p => ({ id: p.id, at: p.created_at, type: 'Pago', detail: `Hab. ${data.roomOf[p.occupancy_id]?.room_number || '?'} · ${p.concept || ''}`, method: p.method, amount: Number(p.amount) })),
+    ...data.pays.map(p => ({ id: p.id, at: p.created_at, type: 'Pago', detail: `Hab. ${data.roomOf[p.occupancy_id]?.room_number || '?'} · ${p.concept || ''}${p.created_by ? ` (${p.created_by})` : ''}`, method: p.method, amount: Number(p.amount) })),
     ...data.exps.map(e => ({ id: e.id, at: e.created_at, type: EXP_KINDS[e.kind], detail: `${e.description}${e.reason ? ' · ' + e.reason : ''} (${e.created_by})`, method: e.method, amount: -Number(e.amount) }))
   ].sort((a, b) => b.at.localeCompare(a.at)) : []
   return (
